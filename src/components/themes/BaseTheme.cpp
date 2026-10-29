@@ -989,9 +989,9 @@ void BaseTheme::drawSelectionHandle(const GfxRenderer& renderer, const Rect rect
   renderer.fillRect(left ? rect.x + radius : rect.x, rect.y, radius, radius);
 }
 
-void BaseTheme::drawSelectionActions(const GfxRenderer& renderer, const Rect rect, const int count) {
+void BaseTheme::drawSelectionActions(const GfxRenderer& renderer, const Rect rect, const char* const* labels,
+                                     const int count) {
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const char* labels[] = {tr(STR_LOOKUP), tr(STR_CLIP), tr(STR_BOOKMARK_OPTION)};
   for (int i = 0; i < count; ++i) {
     const Rect button = selectionGeometry::button(rect, i, metrics.menuSpacing, count);
     renderer.fillRoundedRect(button.x, button.y, button.width, button.height, metrics.controlRadius, Color::White);

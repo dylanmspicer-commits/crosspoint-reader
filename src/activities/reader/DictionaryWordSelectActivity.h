@@ -7,7 +7,7 @@
 #include <string>
 
 #include "activities/Activity.h"
-#include "util/Dictionary.h"
+#include "util/DictionarySet.h"
 
 // Controller for dictionary lookup: renders the background page, runs the
 // lookup against the active StarDict dictionary, and either opens
@@ -40,7 +40,7 @@ class DictionaryWordSelectActivity final : public Activity {
 
   std::string lookupText;
   bool lookupPending = false;
-  Dictionary dict;
+  DictionarySet dict;
   bool dictOpenAttempted = false;
   bool dictOpenOk = false;
   bool dictNeedsIndex = false;

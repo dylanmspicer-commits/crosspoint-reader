@@ -13,14 +13,18 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <string_view>
 
 #include "CrossPointSettings.h"
 #include "HapticFeedback.h"
 #include "ReaderUtils.h"
+#include "VocabStore.h"
 #include "components/HeaderBackTapTarget.h"
+#include "components/UIScale.h"
 #include "components/UITheme.h"
 #include "util/DictHtmlPages.h"
 #include "util/HtmlToPlainText.h"
+#include "util/VocabText.h"
 
 namespace {
 
@@ -30,6 +34,8 @@ constexpr size_t MAX_LINE_BYTES = 191;
 constexpr float PLAIN_TEXT_LINE_SPACING = 2.0f;
 constexpr size_t HEAP_HEADROOM = 8 * 1024;
 constexpr unsigned long MESSAGE_DURATION_MS = 1500;
+// Same minimum as the selection toolbar's buttons.
+constexpr int SAVE_BUTTON_HEIGHT = 36;
 constexpr size_t SELECTION_PAGE_WINDOW = 3;
 // ASCII tokens need separators; Han/Kana tokens take at least three bytes.
 constexpr size_t MAX_PLAIN_WORDS = (MAX_LINE_BYTES + 1) / 2;
@@ -41,6 +47,19 @@ constexpr size_t MAX_PLAIN_WORDS = (MAX_LINE_BYTES + 1) / 2;
 // path, which holds no per-page copies.
 constexpr size_t MAX_STYLED_HTML_BYTES = 16 * 1024;
 
+// Calls fn with each dictionary's part of a gathered definition, or with the
+// whole text when it came from a single dictionary. Stops when fn returns false.
+template <typename Fn>
+bool forEachSection(const std::string& text, Fn fn) {
+  const std::string_view all(text);
+  size_t start = 0;
+  while (start <= all.size()) {
+    const size_t end = std::min(all.find(DICTIONARY_SECTION_MARKER, start), all.size());
+    if (end > start && !fn(all.substr(start, end - start))) return false;
+    start = end + 1;
+  }
+  return true;
+}
 }  // namespace
 
 // Heap-owned only while preparing plain selection pages; keep the loop task's stack small.
@@ -123,7 +142,7 @@ struct DictionaryDefinitionActivity::PlainSelectionLine {
 };
 
 // cppcheck-suppress constParameterReference // the lookup state holds the dictionary by non-const reference
-bool DictionaryDefinitionActivity::enableLookup(Dictionary& dictionary, std::string&& query) {
+bool DictionaryDefinitionActivity::enableLookup(DictionarySet& dictionary, std::string&& query) {
   lookup = makeUniqueNoThrow<LookupState>(dictionary);
   if (!lookup) LOG_ERR("DICT", "OOM: lookup history (%u bytes)", static_cast<unsigned>(sizeof(LookupState)));
   if (lookup) lookup->query = std::move(query);
@@ -150,7 +169,19 @@ bool DictionaryDefinitionActivity::prepareDefinition(Definition& next, const boo
       LOG_ERR("DICT", "Low heap for plain definition (%u bytes)", static_cast<unsigned>(next.text.size() + 1));
       return false;
     }
-    next.text = htmlToPlainText(next.text, DICTIONARY_PLAIN_HEADWORD_MARKER);
+    if (next.text.find(DICTIONARY_SECTION_MARKER) == std::string::npos) {
+      next.text = htmlToPlainText(next.text, DICTIONARY_PLAIN_HEADWORD_MARKER);
+    } else {
+      // Convert part by part so each keeps its marker and still starts a page.
+      std::string plain;
+      forEachSection(next.text, [&plain](const std::string_view part) {
+        plain.push_back(DICTIONARY_SECTION_MARKER);
+        plain += htmlToPlainText(std::string(part), DICTIONARY_PLAIN_HEADWORD_MARKER);
+        if (plain.back() != '\n') plain.push_back('\n');
+        return true;
+      });
+      next.text = std::move(plain);
+    }
   }
   return wrapText(next);
 }
@@ -178,7 +209,8 @@ DictionaryDefinitionActivity::BodyArea DictionaryDefinitionActivity::bodyArea() 
   const int x = contentLeft + metrics.contentSidePadding;
   const int y = std::max(top, isInverted ? metrics.buttonHintsHeight : 0) + metrics.topPadding + metrics.headerHeight +
                 metrics.verticalSpacing;
-  const int bottomArea = std::max(bottom, metrics.buttonHintsHeight) + metrics.verticalSpacing;
+  const int saveStrip = reservesSaveStrip() ? SAVE_BUTTON_HEIGHT + metrics.verticalSpacing : 0;
+  const int bottomArea = std::max(bottom, metrics.buttonHintsHeight) + metrics.verticalSpacing + saveStrip;
   return {x, y, renderer.getScreenWidth() - contentLeft - contentRight - 2 * metrics.contentSidePadding,
           renderer.getScreenHeight() - y - bottomArea};
 }
@@ -194,9 +226,26 @@ bool DictionaryDefinitionActivity::layoutHtmlPages(Definition& next) {
     LOG_ERR("DHTML", "Invalid definition viewport: %dx%d", body.width, body.height);
     return false;
   }
-  if (!buildDictionaryHtmlPages(renderer, definition, static_cast<uint16_t>(body.width),
-                                static_cast<uint16_t>(body.height), pages)) {
-    return false;
+  if (definition.find(DICTIONARY_SECTION_MARKER) == std::string::npos) {
+    if (!buildDictionaryHtmlPages(renderer, definition, static_cast<uint16_t>(body.width),
+                                  static_cast<uint16_t>(body.height), pages)) {
+      return false;
+    }
+  } else {
+    // Lay each dictionary's part out on its own so every part starts a new page.
+    std::vector<std::unique_ptr<Page>> gathered;
+    std::vector<std::unique_ptr<Page>> partPages;
+    const bool laidOut = forEachSection(definition, [&](const std::string_view part) {
+      if (!buildDictionaryHtmlPages(renderer, std::string(part), static_cast<uint16_t>(body.width),
+                                    static_cast<uint16_t>(body.height), partPages)) {
+        return false;
+      }
+      for (auto& page : partPages) gathered.push_back(std::move(page));
+      partPages.clear();
+      return true;
+    });
+    if (!laidOut || gathered.empty()) return false;
+    pages = std::move(gathered);
   }
   definition.clear();
   definition.shrink_to_fit();
@@ -266,6 +315,15 @@ bool DictionaryDefinitionActivity::wrapText(Definition& next) {
     // A marker at the start of a line makes that whole line bold. It stands
     // for a <h2> in the HTML path, and for a synonym's headword label in the
     // plain-text path.
+    // A section marker starts the next dictionary's part on a fresh page.
+    if (lineEnd == lineStart && i == lineStart && text[i] == DICTIONARY_SECTION_MARKER) {
+      lineStart = ++i;
+      lineEnd = lineStart;
+      while (!lines.empty() && lines.size() % static_cast<size_t>(next.linesPerPage) != 0) {
+        if (!flushLine(lineStart)) return false;
+      }
+      continue;
+    }
     if (lineEnd == lineStart && i == lineStart && text[i] == DICTIONARY_PLAIN_HEADWORD_MARKER) {
       lineStart = ++i;
       lineEnd = lineStart;
@@ -360,8 +418,12 @@ void DictionaryDefinitionActivity::showMessage(const StrId nextMessage) {
 bool DictionaryDefinitionActivity::restoreCurrentDefinition(const bool styled) {
   const int page = content.currentPage;
   auto result = Dictionary::LookupResult::Found;
-  if (!lookup->dictionary.lookup(lookup->query.c_str(), content.text, content.headword, &result) ||
-      !prepareDefinition(content, !styled) || styled != !content.pages.empty() || page >= content.totalPages) {
+  bool restored = lookup->dictionary.lookup(lookup->query.c_str(), content.text, content.headword, &result);
+  if (restored) {
+    htmlDefinition = lookup->dictionary.definitionsAreHtml();
+    restored = prepareDefinition(content, !styled) && styled == !content.pages.empty() && page < content.totalPages;
+  }
+  if (!restored) {
     LOG_ERR("DICT", "Cannot recover current definition after failed lookup");
     finish();
     return false;
@@ -420,6 +482,7 @@ void DictionaryDefinitionActivity::navigateDefinition(const bool back) {
     }
     return;
   }
+  htmlDefinition = lookup->dictionary.definitionsAreHtml();
   const bool forcePlain = back && !lookup->history[lookup->depth - 1].styled;
   if (!prepareDefinition(next, forcePlain)) {
     recover(StrId::STR_DICT_LOW_MEMORY);
@@ -582,6 +645,7 @@ void DictionaryDefinitionActivity::loop() {
       requestUpdate();
     }
   }
+  refreshSavedState();
   const int totalPages = content.totalPages;
   int sx = 0;
   int sy = 0;
@@ -615,6 +679,14 @@ void DictionaryDefinitionActivity::loop() {
   int tx = 0;
   int ty = 0;
   if (mappedInput.wasScreenTapped(tx, ty)) {
+    if (canSaveWord()) {
+      const Rect button = saveButtonRect();
+      if (tx >= button.x && tx < button.x + button.width && ty >= button.y && ty < button.y + button.height) {
+        haptic_feedback::touchAction();
+        saveHeadword();
+        return;
+      }
+    }
     if (tx < renderer.getScreenWidth() / 3) {
       if (currentPage > 0) {
         haptic_feedback::touchAction();
@@ -709,6 +781,17 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   drawBody(fontId, body.x, body.y, currentPage);  // scan pass: records codepoints only
   scope.endScanAndPrewarm();
   drawBody(fontId, body.x, body.y, currentPage);
+  if (canSaveWord() && mappedInput.hasTouch()) {
+    // Outlined while the word can still be saved; filled once it is in the list.
+    const auto& buttonMetrics = UITheme::getInstance().getMetrics();
+    const Rect button = saveButtonRect();
+    renderer.fillRoundedRect(button.x, button.y, button.width, button.height, buttonMetrics.controlRadius,
+                             headwordSaved ? Color::Black : Color::White);
+    renderer.drawRoundedRect(button.x, button.y, button.width, button.height, 1, buttonMetrics.controlRadius, true);
+    UITheme::drawCenteredWrappedText(renderer, button, uiScaleSpec().smallFontId,
+                                     headwordSaved ? tr(STR_WORD_SAVED_LABEL) : tr(STR_SAVE_WORD), 1, !headwordSaved,
+                                     EpdFontFamily::REGULAR, UITheme::TextVerticalAlignment::CENTER);
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), lookup ? tr(STR_LOOKUP) : "", (currentPage > 0 ? "<" : ""),
                                             (currentPage + 1 < totalPages ? ">" : ""));
@@ -718,4 +801,52 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
     return;
   }
   renderer.displayBuffer();
+}
+
+bool DictionaryDefinitionActivity::reservesSaveStrip() const { return lookup != nullptr && VOCAB.hasBook(); }
+
+bool DictionaryDefinitionActivity::canSaveWord() const {
+  return reservesSaveStrip() && vocabText::hasIdeograph(content.headword);
+}
+
+Rect DictionaryDefinitionActivity::saveButtonRect() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const BodyArea body = bodyArea();
+  const int font = uiScaleSpec().smallFontId;
+  const int labelWidth =
+      std::max(renderer.getTextWidth(font, tr(STR_SAVE_WORD)), renderer.getTextWidth(font, tr(STR_WORD_SAVED_LABEL)));
+  const int width = std::min(body.width, labelWidth + metrics.menuSpacing * 4);
+  return Rect{body.x + body.width - width, body.y + body.height + metrics.verticalSpacing, width, SAVE_BUTTON_HEIGHT};
+}
+
+void DictionaryDefinitionActivity::refreshSavedState() {
+  if (!canSaveWord() || savedStateFor == content.headword) return;
+  const bool saved = VOCAB.contains(content.headword);
+  RenderLock lock;
+  savedStateFor = content.headword;
+  headwordSaved = saved;
+  requestUpdate();
+}
+
+void DictionaryDefinitionActivity::saveHeadword() {
+  const std::string word = content.headword;
+  const std::string gloss = VocabStore::glossFor(lookup->dictionary, word);
+  const auto result = VOCAB.add(word, gloss);
+  RenderLock lock;
+  headwordSaved = result == VocabStore::AddResult::Added || result == VocabStore::AddResult::AlreadySaved;
+  savedStateFor = word;
+  switch (result) {
+    case VocabStore::AddResult::Added:
+      showMessage(StrId::STR_VOCAB_SAVED);
+      break;
+    case VocabStore::AddResult::AlreadySaved:
+      showMessage(StrId::STR_VOCAB_ALREADY_SAVED);
+      break;
+    case VocabStore::AddResult::Full:
+      showMessage(StrId::STR_VOCAB_FULL);
+      break;
+    case VocabStore::AddResult::Failed:
+      showMessage(StrId::STR_VOCAB_SAVE_FAILED);
+      break;
+  }
 }

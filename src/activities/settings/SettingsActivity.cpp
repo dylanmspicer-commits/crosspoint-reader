@@ -19,6 +19,7 @@
 #include "ClearCacheActivity.h"
 #include "ClockSettingsActivity.h"
 #include "CrossPointSettings.h"
+#include "DictionaryOrderActivity.h"
 #include "FontDownloadActivity.h"
 #include "HomeButtonSettingsActivity.h"
 #include "KOReaderSettingsActivity.h"
@@ -126,6 +127,10 @@ void SettingsActivity::rebuildSettings() {
   // Clock configuration only exists where the RTC probe found hardware.
   if (halClock.isAvailable()) {
     addAction(SettingsSection::General, StrId::STR_CLOCK, SettingAction::ClockSettings);
+  }
+  // Order only matters when "All dictionaries" has more than one to search.
+  if (dictionaries.size() > 1) {
+    addAction(SettingsSection::Reader, StrId::STR_DICT_ORDER, SettingAction::DictionaryOrder);
   }
   addAction(SettingsSection::Reader, StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar);
   addAction(SettingsSection::Reader, StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache);
@@ -392,6 +397,13 @@ void SettingsActivity::toggleSelectedSetting() {
         requestUpdate();
         return;
       }
+      case SettingAction::DictionaryOrder:
+        if (auto activity = makeUniqueNoThrow<DictionaryOrderActivity>(renderer, mappedInput)) {
+          startActivityForResult(std::move(activity), nullptr);
+        } else {
+          LOG_ERR("SETTINGS", "OOM: DictionaryOrderActivity");
+        }
+        break;
       case SettingAction::KeyboardLayouts:
         if (auto activity = makeUniqueNoThrow<KeyboardLayoutsActivity>(renderer, mappedInput)) {
           startActivityForResult(std::move(activity), nullptr);

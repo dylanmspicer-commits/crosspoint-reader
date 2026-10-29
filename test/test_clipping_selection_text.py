@@ -155,7 +155,7 @@ struct Renderer {
 };
 struct Theme {
   void drawSelectionHandle(const Renderer&, Rect, bool) const {}
-  void drawSelectionActions(const Renderer&, Rect, int = 3) const {}
+  void drawSelectionActions(const Renderer&, Rect, const char* const*, int) const {}
 } GUI;
 struct Input { bool hasTouch() const { return false; } };
 using GfxRenderer = Renderer;
@@ -198,6 +198,7 @@ struct ClipSelectionActivity {
   Mode mode = Mode::Clip;
   Renderer renderer;
   Input mappedInput;
+  void drawActions() const {}
   std::vector<std::unique_ptr<Page>> pages;
   std::span<const std::unique_ptr<Page>> borrowedPages;
   size_t pageCount() const { return borrowedPages.empty() ? pages.size() : borrowedPages.size(); }

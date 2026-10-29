@@ -42,8 +42,8 @@ structs = "\n".join(block(header, f"struct {name} {{", True) for name in (
 location = block((ROOT / "src/util/Dictionary.h").read_text(), "struct DictLocation {", True)
 entry = block((ROOT / "src/util/Dictionary.h").read_text(), "struct DictEntry {", True)
 entry_list = block((ROOT / "src/util/Dictionary.h").read_text(), "class DictEntryList {", True)
-marker = next(line for line in (ROOT / "src/util/Dictionary.h").read_text().splitlines()
-              if "DICTIONARY_PLAIN_HEADWORD_MARKER =" in line)
+marker = "\n".join(line for line in (ROOT / "src/util/Dictionary.h").read_text().splitlines()
+                   if "DICTIONARY_PLAIN_HEADWORD_MARKER =" in line or "DICTIONARY_SECTION_MARKER =" in line)
 selection = block(selector, "struct Selection {", True)
 plain_scratch = block(viewer, "struct DictionaryDefinitionActivity::PlainSelectionLine {", True)
 constants = viewer.split("namespace {", 1)[1].split("}  // namespace", 1)[0]
@@ -83,7 +83,7 @@ harness = r'''
 template<typename... Args> void logDebug(Args&&...) {}
 #define LOG_DBG(...) logDebug(__VA_ARGS__)
 
-''' + constants + '\nnamespace ReaderUtils {\n' + reader_constants + '}\n' + marker + '\n' + r'''
+''' + marker + '\n' + constants + '\nnamespace ReaderUtils {\n' + reader_constants + '}\n' + r'''
 
 enum class StrId { STR_DICT_LOOKING_UP, STR_DICT_NOT_FOUND, STR_DICT_LOW_MEMORY, STR_DICT_READ_FAILED,
                    STR_DICT_DECOMPRESS_ERROR, STR_DICT_RESTORE_FAILED, STR_DICT_HISTORY_FULL };
@@ -184,7 +184,10 @@ struct Dictionary {
     return readDefinition(location, text, result);
   }
   std::string lastQuery;
+  bool html = false;
+  bool definitionsAreHtml() const { return html; }
 };
+using DictionarySet = Dictionary;
 struct ClipSelectionActivity {
 ''' + selection + r'''
   template<typename... Args> explicit ClipSelectionActivity(Args&&...) {}
@@ -322,7 +325,7 @@ int main() {
   view.navigateDefinition(true);
   assert(view.content.text == dictionary.entries.at(20));
   // Back must exit if the original styled position cannot be restored.
-  view.htmlDefinition = styledAvailable = true;
+  view.htmlDefinition = dictionary.html = styledAvailable = true;
   view.content.text = dictionary.entries.at(10);
   assert(view.prepareDefinition(view.content));
   view.lookup->pendingWord = "alias";
@@ -347,7 +350,22 @@ int main() {
   view.navigateDefinition(true);
   assert(view.content.pages.empty());
   // The plain adapter keeps byte ranges, CJK character boundaries, line positions, and page boundaries.
-  view.htmlDefinition = false;
+  // Each dictionary's part of a gathered definition starts on a new page.
+  view.htmlDefinition = dictionary.html = false;
+  view.content = {};
+  view.content.text = std::string(1, DICTIONARY_SECTION_MARKER) + DICTIONARY_PLAIN_HEADWORD_MARKER + "english\none\n" +
+                      DICTIONARY_SECTION_MARKER + DICTIONARY_PLAIN_HEADWORD_MARKER + "cedict\ntwo\n";
+  assert(view.prepareDefinition(view.content));
+  {
+    const auto& wrapped = view.content.lines;
+    size_t second = wrapped.size();
+    for (size_t i = 0; i < wrapped.size(); ++i) {
+      if (wrapped[i].bold && view.content.text.compare(wrapped[i].start, 6, "cedict") == 0) second = i;
+    }
+    assert(second < wrapped.size() && second % static_cast<size_t>(view.content.linesPerPage) == 0);
+    assert(wrapped[0].bold && view.content.text.compare(wrapped[0].start, 7, "english") == 0);
+    assert(view.content.totalPages == 2);
+  }
   view.content = {};
   view.content.text = "one two\n你好世\nthree four\nfive six\nseven eight\nnine ten\neleven";
   assert(view.prepareDefinition(view.content));

@@ -33,7 +33,7 @@ bool formatKindleAddedOn(char* buf, const size_t bufSize) {
 
 bool ClippingsManager::saveClipping(const std::string& bookTitle, const std::string& author,
                                     const std::string& chapterTitle, const int pageNumber,
-                                    const std::string& selectedText) {
+                                    const std::string& selectedText, const std::string& note) {
   HalFile file = Storage.open(CLIPPINGS_PATH, O_RDWR | O_CREAT | O_AT_END);
   if (!file) {
     LOG_ERR("CLIP", "Failed to open %s for append", CLIPPINGS_PATH);
@@ -41,16 +41,18 @@ bool ClippingsManager::saveClipping(const std::string& bookTitle, const std::str
   }
   const size_t originalSize = file.fileSize();
 
-  std::string location = "- Your Highlight on Page " + std::to_string(pageNumber);
+  // Kindle layout: "- Your <Kind> on Page N | chapter | Added on ...".
+  std::string details = " on Page " + std::to_string(pageNumber);
   if (!chapterTitle.empty()) {
-    location += " | " + chapterTitle;
+    details += " | " + chapterTitle;
   }
   char addedOn[80];
   if (formatKindleAddedOn(addedOn, sizeof(addedOn))) {
-    location += " | ";
-    location += addedOn;
+    details += " | ";
+    details += addedOn;
   }
-  location += "\n";
+  details += "\n";
+  const std::string location = "- Your Highlight" + details;
 
   static constexpr size_t MAX_TEXT_BYTES = 2000;
   const size_t rawTextLen = std::min(selectedText.size(), MAX_TEXT_BYTES);
@@ -67,6 +69,19 @@ bool ClippingsManager::saveClipping(const std::string& bookTitle, const std::str
   buffer += '\n';
   buffer.append(selectedText.c_str(), textLen);
   buffer += separator;
+  if (!note.empty()) {
+    // A separate entry, as Kindle writes notes, so importers keep it apart from the passage.
+    const size_t noteLen = static_cast<size_t>(
+        utf8SafeTruncateBuffer(note.data(), static_cast<int>(std::min(note.size(), MAX_TEXT_BYTES))));
+    buffer += bookTitle;
+    buffer += " (";
+    buffer += author;
+    buffer += ")\n- Your Note";
+    buffer += details;
+    buffer += '\n';
+    buffer.append(note.c_str(), noteLen);
+    buffer += separator;
+  }
 
   const bool ok = file.write(buffer.data(), buffer.size()) == buffer.size();
   const bool rolledBack = ok || file.truncate(originalSize);

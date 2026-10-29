@@ -69,6 +69,11 @@ class ClipSelectionActivity final : public Activity {
   const Page& pageAt(size_t index) const { return *(borrowedPages.empty() ? pages[index] : borrowedPages[index]); }
   bool isLookup() const { return mode != Mode::Clip; }
   int actionAt(int x, int y) const;
+  std::span<const ClippingResult::Action> selectionActions() const;
+  // True when the selection is a short run of Chinese characters, worth a Save Word button.
+  bool selectionIsWord() const;
+  // Grow a long-pressed CJK character to the longest dictionary word around it.
+  void selectDictionaryWord(int hit);
   int closestInRow(uint16_t row, int centerX) const;
   int wordAt(int x, int y) const;
   int dragWordAt(int x, int y) const;
@@ -89,6 +94,7 @@ class ClipSelectionActivity final : public Activity {
   void cancel();
   bool buildSelectedText(int first, int last, std::string& text) const;
   void drawSelection() const;
+  void drawActions() const;
   bool renderIncremental();
   void drawWordHighlight(int index, int firstSelected, int lastSelected, int offsetX, int offset) const;
   void drawWordClean(int index, int offsetX, int offset) const;

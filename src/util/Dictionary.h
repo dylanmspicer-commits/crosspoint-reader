@@ -64,6 +64,10 @@ class DictEntryList {
 // draws a line that starts with it in bold.
 inline constexpr char DICTIONARY_PLAIN_HEADWORD_MARKER = '\x01';
 
+// Starts one dictionary's part of a definition gathered from several
+// dictionaries. The viewer begins each part on a new page.
+inline constexpr char DICTIONARY_SECTION_MARKER = '\x02';
+
 // Slim StarDict reader: exact-match lookup with a synonym and mini stemming
 // fallback.
 //
@@ -137,6 +141,12 @@ class Dictionary {
   // Reload the exact entry, including synonym targets with duplicate headwords.
   bool readDefinition(const DictLocation& location, std::string& out, LookupResult* outResult = nullptr,
                       bool append = false);
+
+  // Exact headword probes for word detection: found[i] is set when words[i] is a
+  // headword (case-insensitive; no synonyms or stemming). Reads only the index,
+  // through one session. False without a fresh .qidx, so a probe never falls
+  // back to scanning the whole index.
+  bool hasHeadwords(const char* const* words, size_t count, bool* found);
 
   static std::string cleanWord(const char* word);
 

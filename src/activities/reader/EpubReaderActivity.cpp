@@ -51,14 +51,18 @@
 #include "SdCardFont.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
+#include "VocabStore.h"
+#include "VocabularyListActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/settings/TextSettingsActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "clippings/ClippingText.h"
 #include "clippings/ClippingsManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
+#include "util/DictionarySet.h"
 #include "util/ScreenshotUtil.h"
 
 namespace {
@@ -73,6 +77,8 @@ bool xteinkClassPanel() {
 constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 constexpr int CLIP_SELECTION_PAGE_WINDOW = 3;
+// Keeps a note short enough to type and read back on an e-ink screen.
+constexpr size_t NOTE_MAX_BYTES = 1000;
 
 // Word i's font: headings and CSS font-size runs can differ from the section font.
 int clippingWordFont(const GfxRenderer& renderer, const int fontId, const TextBlock& block, const uint16_t i) {
@@ -227,6 +233,7 @@ EpubReaderActivity::~EpubReaderActivity() {
 
   section.reset();
   CLIPPINGS.unload();
+  VOCAB.clearBook();
   if (pendingReadFolderMove && epub) {
     const std::string srcPath = epub->getPath();
     const std::string oldCachePath = epub->getCachePath();
@@ -310,6 +317,7 @@ bool EpubReaderActivity::loadBook() {
   if (!CLIPPINGS.loadForBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), "epub")) {
     LOG_ERR("CLIP", "Failed to load clippings for %s", epub->getPath().c_str());
   }
+  VOCAB.setBook(epub->getPath());
   return true;
 }
 
@@ -500,11 +508,15 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
   marginTop += SETTINGS.screenMargin;
   marginLeft += SETTINGS.screenMargin;
 
-  std::string chapterTitle;
+  ClipContext context;
+  context.spineIndex = spineIndex;
+  context.pageNumber = pageNumber;
+  context.pageCount = pageCount;
+  context.layoutSignature = layoutSignature;
   const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-  if (tocIndex >= 0) chapterTitle = epub->getTocItem(tocIndex).title;
-  std::string bookTitle = epub->getTitle();
-  std::string author = epub->getAuthor();
+  if (tocIndex >= 0) context.chapterTitle = epub->getTocItem(tocIndex).title;
+  context.bookTitle = epub->getTitle();
+  context.author = epub->getAuthor();
 
   auto activity = makeUniqueNoThrow<ClipSelectionActivity>(renderer, mappedInput, std::move(pages), marginLeft,
                                                            marginTop, initialX, initialY, mode);
@@ -513,17 +525,14 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
     requestUpdate();
     return;
   }
-  startActivityForResult(std::move(activity), [this, spineIndex, pageNumber, pageCount, layoutSignature,
-                                               bookTitle = std::move(bookTitle), author = std::move(author),
-                                               chapterTitle = std::move(chapterTitle)](const ActivityResult& result) {
+  startActivityForResult(std::move(activity), [this, context = std::move(context)](const ActivityResult& result) {
     if (result.isCancelled) {
       requestUpdate();
       return;
     }
     const auto& clipping = std::get<ClippingResult>(result.data);
-    const uint16_t startPage = static_cast<uint16_t>(pageNumber + clipping.startPageOffset);
-    const uint16_t endPage = static_cast<uint16_t>(pageNumber + clipping.endPageOffset);
-    if (section && currentSpineIndex == spineIndex && endPage < section->pageCount) {
+    const uint16_t endPage = static_cast<uint16_t>(context.pageNumber + clipping.endPageOffset);
+    if (section && currentSpineIndex == context.spineIndex && endPage < section->pageCount) {
       section->currentPage = endPage;
       currentPageVisibleOffset = section->getVisibleTextOffsetForPage(endPage);
     }
@@ -556,23 +565,103 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
       });
       return;
     }
-    const uint16_t paragraphIndex =
-        section ? section->getParagraphIndexForPage(startPage).value_or(UINT16_MAX) : UINT16_MAX;
-    const auto addResult = CLIPPINGS.addClipping(
-        spineIndex, startPage, endPage, pageCount, clipping.startWordIndex, clipping.endWordIndex, clipping.wordCount,
-        chapterTitle.c_str(), paragraphIndex, clipping.text, layoutSignature, clipping.startOffset, clipping.endOffset);
-    bool exported = false;
-    if (addResult == ClippingStore::AddResult::Added) {
-      exported = ClippingsManager::saveClipping(bookTitle, author, chapterTitle, startPage + 1, clipping.text);
+    if (clipping.action == ClippingResult::Action::Note) {
+      openNoteEntry(clipping, context);
+      return;
     }
-    clippingMessage = addResult == ClippingStore::AddResult::LimitReached ? StrId::STR_CLIPPING_LIMIT_REACHED
-                      : exported                                          ? StrId::STR_CLIPPING_SAVED
-                      : addResult == ClippingStore::AddResult::Added      ? StrId::STR_CLIPPING_EXPORT_FAILED
-                                                                          : StrId::STR_CLIPPING_FAILED;
-    showClippingMessage = true;
-    clippingMessageTime = millis();
-    requestUpdate();
+    if (clipping.action == ClippingResult::Action::SaveWord) {
+      saveVocabWord(Dictionary::cleanWord(clipping.text.c_str()));
+      return;
+    }
+    saveClipping(clipping, context, {});
   });
+}
+
+void EpubReaderActivity::saveVocabWord(const std::string& word) {
+  std::string gloss;
+  DictionarySet dictionaries;
+  if (dictionaries.open(SETTINGS.dictionaryName)) {
+    // A lookup without the index scans it whole; build it once, as Look Up does.
+    if (dictionaries.needsIndex()) dictionaries.buildIndex();
+    gloss = VocabStore::glossFor(dictionaries, word);
+  }
+  switch (VOCAB.add(word, gloss)) {
+    case VocabStore::AddResult::Added:
+      clippingMessage = StrId::STR_VOCAB_SAVED;
+      break;
+    case VocabStore::AddResult::AlreadySaved:
+      clippingMessage = StrId::STR_VOCAB_ALREADY_SAVED;
+      break;
+    case VocabStore::AddResult::Full:
+      clippingMessage = StrId::STR_VOCAB_FULL;
+      break;
+    case VocabStore::AddResult::Failed:
+      clippingMessage = StrId::STR_VOCAB_SAVE_FAILED;
+      break;
+  }
+  showClippingMessage = true;
+  clippingMessageTime = millis();
+  requestUpdate();
+}
+
+void EpubReaderActivity::openNoteEntry(ClippingResult clipping, ClipContext context) {
+  // Room for the selection plus the note label within one clipping's text budget.
+  const size_t labelBytes = strlen(tr(STR_NOTE_LABEL)) + 3;
+  const size_t room =
+      CLIPPING_TEXT_MAX > clipping.text.size() + labelBytes ? CLIPPING_TEXT_MAX - clipping.text.size() - labelBytes : 0;
+  if (room == 0) {
+    saveClipping(clipping, context, {});
+    return;
+  }
+  auto keyboard = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ADD_NOTE), "",
+                                                           std::min<size_t>(room, NOTE_MAX_BYTES), InputType::Text);
+  if (!keyboard) {
+    LOG_ERR("CLIP", "OOM: note keyboard");
+    requestUpdate();
+    return;
+  }
+  startActivityForResult(std::move(keyboard), [this, clipping = std::move(clipping),
+                                               context = std::move(context)](const ActivityResult& result) {
+    // Cancelling the keyboard saves nothing, the same as cancelling the selection.
+    if (result.isCancelled) {
+      requestUpdate();
+      return;
+    }
+    saveClipping(clipping, context, std::get<KeyboardResult>(result.data).text);
+  });
+}
+
+void EpubReaderActivity::saveClipping(const ClippingResult& clipping, const ClipContext& context,
+                                      const std::string& note) {
+  const uint16_t startPage = static_cast<uint16_t>(context.pageNumber + clipping.startPageOffset);
+  const uint16_t endPage = static_cast<uint16_t>(context.pageNumber + clipping.endPageOffset);
+  // The note is stored after the passage so it shows when the clipping is opened;
+  // the highlight itself is anchored by source offsets, not by this text.
+  std::string text = clipping.text;
+  if (!note.empty()) {
+    text += "\n\n";
+    text += tr(STR_NOTE_LABEL);
+    text += ' ';
+    text += note;
+  }
+  const uint16_t paragraphIndex =
+      section ? section->getParagraphIndexForPage(startPage).value_or(UINT16_MAX) : UINT16_MAX;
+  const auto addResult =
+      CLIPPINGS.addClipping(context.spineIndex, startPage, endPage, context.pageCount, clipping.startWordIndex,
+                            clipping.endWordIndex, clipping.wordCount, context.chapterTitle.c_str(), paragraphIndex,
+                            text, context.layoutSignature, clipping.startOffset, clipping.endOffset);
+  bool exported = false;
+  if (addResult == ClippingStore::AddResult::Added) {
+    exported = ClippingsManager::saveClipping(context.bookTitle, context.author, context.chapterTitle, startPage + 1,
+                                              clipping.text, note);
+  }
+  clippingMessage = addResult == ClippingStore::AddResult::LimitReached ? StrId::STR_CLIPPING_LIMIT_REACHED
+                    : exported                                          ? StrId::STR_CLIPPING_SAVED
+                    : addResult == ClippingStore::AddResult::Added      ? StrId::STR_CLIPPING_EXPORT_FAILED
+                                                                        : StrId::STR_CLIPPING_FAILED;
+  showClippingMessage = true;
+  clippingMessageTime = millis();
+  requestUpdate();
 }
 
 void EpubReaderActivity::openFootnoteSelect(const bool reopenMenuOnCancel) {
@@ -1284,6 +1373,14 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     }
     case EpubReaderMenuActivity::MenuAction::VIEW_CLIPPINGS: {
       openClippings();
+      break;
+    }
+    case EpubReaderMenuActivity::MenuAction::VOCABULARY: {
+      if (auto list = makeUniqueNoThrow<VocabularyListActivity>(renderer, mappedInput)) {
+        startActivityForResult(std::move(list), [this](const ActivityResult&) { requestUpdate(); });
+      } else {
+        LOG_ERR("VOCAB", "OOM: vocabulary list");
+      }
       break;
     }
     case EpubReaderMenuActivity::MenuAction::TOGGLE_BOOKMARK: {

@@ -366,6 +366,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   char sdFontFamilyName[32] = "";
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
+  // Search order for "All dictionaries": folder names joined by '/', which a
+  // folder name cannot contain. Folders missing from it follow in name order.
+  char dictionaryOrder[256] = "";
   // Master switch for all SD-card plugin discovery/execution. New installs keep
   // this disabled; settings migration enables it when pre-existing plugin files
   // are found so a firmware update never silently disables an existing setup.

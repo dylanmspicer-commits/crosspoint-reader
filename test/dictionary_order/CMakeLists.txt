@@ -1,0 +1,4 @@
+add_executable(DictionaryOrderTest DictionaryOrderTest.cpp)
+target_link_libraries(DictionaryOrderTest PRIVATE crosspoint_test_common GTest::gtest_main)
+target_include_directories(DictionaryOrderTest PRIVATE ${REPO_ROOT}/src)
+gtest_discover_tests(DictionaryOrderTest)

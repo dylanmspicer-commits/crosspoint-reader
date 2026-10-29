@@ -22,7 +22,15 @@ Not supported: dictionaries with 64-bit index offsets (`idxoffsetbits=64` in the
 
 1. Copy your dictionary folder(s) to `/dictionaries/` on the SD card — one dictionary per folder, e.g. `/dictionaries/webster/webster.idx` + `webster.dict.dz`. A hidden `/.dictionaries/` folder (dot-prefixed) works the same way, for keeping it out of the file browser.
 2. Open **Settings → Reader → Dictionary** on the device.
-3. Select a dictionary from the list, or **None** to disable lookups.
+3. Select a dictionary from the list, **All dictionaries** to search every installed one, or **None** to disable lookups.
+
+With **All dictionaries**, a lookup shows the entry from every dictionary that has the word. Each dictionary's entry starts on a new page under its name, so page forward to move from one dictionary to the next. A Chinese–English and an English dictionary can be installed side by side, and a dictionary added later is used without changing the setting. Up to eight dictionaries are searched. If the combined entries pass the definition size limit, the later dictionaries are left out.
+
+When the entries use different formats (some HTML, some plain text), all of them are shown as plain text.
+
+### Dictionary Order
+
+**Settings → Reader → Dictionary Order** (shown when two or more dictionaries are installed) sets the order dictionaries are searched and shown in. Select a dictionary to pick it up, then select the row to move it to; **Back** puts a picked-up dictionary down again. Dictionaries added later appear at the end, in name order. A number prefix on a folder name, such as `1-cedict`, is hidden in the list and in definition headings.
 
 The Dictionary setting only appears when at least one usable dictionary folder exists. Folders containing more than one dictionary (multiple `.idx` stems) are skipped as ambiguous.
 
@@ -45,7 +53,9 @@ Two ways to start a lookup while reading:
 
 **On touchscreen devices:**
 
-- Tap or drag the selection handles across words to highlight a word or phrase, then tap **Look Up**.
+- Press and hold a word. The whole word is selected, with a handle at each end and **Highlight**, **Add Note** and **Look Up** above it. Drag either handle to change the selection, then tap an action.
+- Chinese text has no spaces between words, so the reader checks your dictionaries for the longest word (up to six characters) that contains the held character, and selects it. This works when a word continues onto the next line or page. If the selection is too short, for example two characters of a four-character idiom, drag a handle to extend it. Detection needs the dictionary's index, which the first **Look Up** builds; until then a single character is selected.
+- An English word hyphenated at the end of a line is selected as one word.
 
 On the very first lookup with a dictionary (and again whenever the `.idx` or `.syn` source file changes), the reader shows *"Indexing dictionary…"* while it builds small sidecar files next to them — a `.qidx` for the word index, and a `.sidx` when a `.syn` synonym file is present. Each sidecar is rebuilt independently, only when its own source changes. This takes a few seconds for large dictionaries and makes all subsequent lookups fast. The sidecars can be deleted safely at any time — they will simply be rebuilt.
 
@@ -99,3 +109,13 @@ The screen also closes if a failed forward lookup cannot reload the current defi
 - [Fictionaries](https://fictionary.gumroad.com/) provides dictionaries for various speculative fiction books and series.
 - [World Factbooks Archive](https://github.com/MilkMp/CIA-World-Factbooks-Archive-1990-2025) provides 36 years of CIA's World Factbook dictionaries in StarDict format.
 - [StarDict-Hebrew](https://github.com/Uri-Tauber/StarDict-Hebrew) Hebrew-English StarDict versions of Babylon dictionaries.
+
+## Vocabulary List
+
+Each book has its own list of Chinese words you want to remember.
+
+- **Save a word:** press and hold a Chinese word in the book, then tap **Save Word** (shown when the selection is a few Chinese characters). Or tap **Save Word** at the bottom of a Chinese word's definition page; it shows **Saved** once the word is in the list.
+- **See the list:** open the reader menu and choose **Vocabulary** (shown once the book has a saved word). Each word appears with a one-line note taken from your dictionaries, such as its pinyin and first meaning.
+- **Tap a word** to open its full definition. **Hold a word** (or hold **Confirm**) to delete it.
+
+A word is saved once per book. The list is stored with the book's highlights and moves or is deleted along with the book. Up to 2000 words per book.

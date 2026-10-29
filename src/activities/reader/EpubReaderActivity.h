@@ -200,6 +200,21 @@ class EpubReaderActivity final : public ReaderActivity {
   void openDictionaryWordSelect();
   void startClipSelection(int initialX = -1, int initialY = -1,
                           ClipSelectionActivity::Mode mode = ClipSelectionActivity::Mode::Clip);
+  // Where a selection was made, captured when the selection starts.
+  struct ClipContext {
+    uint16_t spineIndex = 0;
+    int pageNumber = 0;
+    uint16_t pageCount = 0;
+    uint32_t layoutSignature = 0;
+    std::string bookTitle;
+    std::string author;
+    std::string chapterTitle;
+  };
+  // Save a highlight, with note text appended when note is not empty.
+  void saveClipping(const ClippingResult& clipping, const ClipContext& context, const std::string& note);
+  void openNoteEntry(ClippingResult clipping, ClipContext context);
+  // Add word to this book's vocabulary list with a short gloss from the dictionaries.
+  void saveVocabWord(const std::string& word);
   int clippingAtPoint(const Page& page, int x, int y) const;
   void openClippings();
   void applyProgressChange(const ProgressChangeResult& progress);

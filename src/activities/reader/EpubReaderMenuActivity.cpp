@@ -9,6 +9,7 @@
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "ReaderUtils.h"
+#include "VocabStore.h"
 #include "components/UITheme.h"
 #include "util/PluginEvents.h"
 #include "util/SlideSwitch.h"
@@ -76,6 +77,9 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const 
   items.push_back({MenuAction::SAVE_CLIPPING, StrId::STR_SAVE_CLIPPING});
   if (hasClippings) {
     items.push_back({MenuAction::VIEW_CLIPPINGS, StrId::STR_VIEW_CLIPPINGS});
+  }
+  if (VOCAB.count() != 0) {
+    items.push_back({MenuAction::VOCABULARY, StrId::STR_VOCABULARY});
   }
   if (!slideSwitchOwns(CrossPointSettings::SLIDE_SWITCH_NIGHT_MODE)) {
     items.push_back({MenuAction::NIGHT_MODE, StrId::STR_NIGHT_MODE});

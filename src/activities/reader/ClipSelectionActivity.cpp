@@ -20,6 +20,9 @@
 #include "clippings/SelectionGeometry.h"
 #include "components/UIScale.h"
 #include "components/UITheme.h"
+#include "util/DictionarySet.h"
+#include "util/VocabText.h"
+#include "util/WordDetect.h"
 #include "util/WordSelectionInput.h"
 
 using Input = WordSelectionInput;
@@ -29,8 +32,30 @@ namespace {
 constexpr int TOUCH_DRAG_MOVEMENT_PX = 4;
 constexpr unsigned long TOUCH_PAGE_ADVANCE_HOLD_MS = 1000;
 constexpr int TOUCH_PAGE_END_DWELL_SLOP_PX = 8;
-constexpr ClippingResult::Action SELECTION_ACTIONS[] = {ClippingResult::Action::Lookup, ClippingResult::Action::Clip,
-                                                        ClippingResult::Action::Bookmark};
+// Toolbar order, left to right.
+constexpr ClippingResult::Action READER_ACTIONS[] = {ClippingResult::Action::Clip, ClippingResult::Action::Note,
+                                                     ClippingResult::Action::Lookup};
+// Chinese selections can also be saved to the book's vocabulary list.
+constexpr ClippingResult::Action CHINESE_READER_ACTIONS[] = {ClippingResult::Action::Clip, ClippingResult::Action::Note,
+                                                             ClippingResult::Action::Lookup,
+                                                             ClippingResult::Action::SaveWord};
+constexpr ClippingResult::Action DEFINITION_ACTIONS[] = {ClippingResult::Action::Lookup};
+
+const char* actionLabel(const ClippingResult::Action action) {
+  switch (action) {
+    case ClippingResult::Action::Clip:
+      return tr(STR_HIGHLIGHT);
+    case ClippingResult::Action::Note:
+      return tr(STR_ADD_NOTE);
+    case ClippingResult::Action::Bookmark:
+      return tr(STR_BOOKMARK_OPTION);
+    case ClippingResult::Action::SaveWord:
+      return tr(STR_SAVE_WORD);
+    case ClippingResult::Action::Lookup:
+      break;
+  }
+  return tr(STR_LOOKUP);
+}
 
 const char* cleanWordStart(const char* text) {
   if (!text) return "";
@@ -110,9 +135,66 @@ void ClipSelectionActivity::onEnter() {
       return;
     }
     selected = rangeStart = hit;
+    selectDictionaryWord(hit);
     ignoreInitialTouch = true;
   }
   requestUpdate();
+}
+
+void ClipSelectionActivity::selectDictionaryWord(const int hit) {
+  if (words[hit].isRtl) return;
+  const auto joined = [this](const int a, const int b) {
+    // Same test buildSelectedText() uses to decide that no space separates two tokens.
+    return words[a].endOffset != UINT32_MAX && words[b].startOffset != UINT32_MAX &&
+           words[b].startOffset <= words[a].endOffset && !words[b].paragraphStart && !words[b].isRtl;
+  };
+
+  // A word hyphenated at a line end is two tokens; select both halves.
+  if (wordDetect::shapeOf(cleanWordStart(words[hit].text)).ideograph.empty()) {
+    int start = hit;
+    while (start > 0 && words[start - 1].discretionaryHyphen && joined(start - 1, start)) --start;
+    int end = hit;
+    while (end + 1 < static_cast<int>(wordCount) && words[end].discretionaryHyphen && joined(end, end + 1)) ++end;
+    rangeStart = start;
+    selected = end;
+    return;
+  }
+  if (SETTINGS.dictionaryName[0] == '\0') return;
+
+  // The tokens a word could span: neighbours with no gap in the source text, so a
+  // word broken across lines or onto the next preloaded page is still found.
+  constexpr int REACH = static_cast<int>(wordDetect::MAX_CHARS) - 1;
+  int first = hit;
+  while (first > 0 && hit - first < REACH && joined(first - 1, first)) --first;
+  int last = hit;
+  while (last + 1 < static_cast<int>(wordCount) && last - hit < REACH && joined(last, last + 1)) ++last;
+  if (first == last) return;
+
+  std::vector<wordDetect::Token> run;
+  run.reserve(last - first + 1);
+  for (int i = first; i <= last; ++i) run.push_back({cleanWordStart(words[i].text)});
+  const size_t runHit = static_cast<size_t>(hit - first);
+  const auto candidates = wordDetect::candidates(run, runHit);
+  if (candidates.empty()) return;
+
+  const unsigned long started = millis();
+  DictionarySet dictionaries;
+  // A missing .qidx would make every probe scan the whole index; the first Look Up builds it.
+  if (!dictionaries.open(SETTINGS.dictionaryName) || dictionaries.needsIndex()) {
+    LOG_INF("CLIP", "Word detection skipped: dictionary not ready");
+    return;
+  }
+  std::vector<const char*> texts;
+  texts.reserve(candidates.size());
+  for (const auto& candidate : candidates) texts.push_back(candidate.text.c_str());
+  auto found = makeUniqueNoThrow<bool[]>(texts.size());
+  if (!found || !dictionaries.hasHeadwords(texts.data(), texts.size(), found.get())) return;
+  const std::vector<bool> hits(found.get(), found.get() + texts.size());
+  const auto span = wordDetect::choose(candidates, hits, runHit);
+  rangeStart = first + static_cast<int>(span.first);
+  selected = first + static_cast<int>(span.last);
+  LOG_INF("CLIP", "Word detection: %u candidates, %u chars, %lu ms", static_cast<unsigned>(candidates.size()),
+          static_cast<unsigned>(span.last - span.first + 1), millis() - started);
 }
 
 bool ClipSelectionActivity::extractWords() {
@@ -485,7 +567,7 @@ void ClipSelectionActivity::loop() {
     if (rangeStart >= 0) {
       const int action = actionAt(touchX, touchY);
       if (action >= 0) {
-        confirmSelection(SELECTION_ACTIONS[action]);
+        confirmSelection(selectionActions()[action]);
         return;
       }
       const int first = std::min(rangeStart, selected);
@@ -656,7 +738,25 @@ int ClipSelectionActivity::selectionTop() const {
 
 int ClipSelectionActivity::actionAt(const int x, const int y) const {
   return selectionGeometry::actionAt(actionRect(), UITheme::getInstance().getMetrics().menuSpacing, x, y,
-                                     mode == Mode::DefinitionLookup ? 1 : 3);
+                                     static_cast<int>(selectionActions().size()));
+}
+
+std::span<const ClippingResult::Action> ClipSelectionActivity::selectionActions() const {
+  if (mode == Mode::DefinitionLookup) return DEFINITION_ACTIONS;
+  return selectionIsWord() ? std::span<const ClippingResult::Action>(CHINESE_READER_ACTIONS)
+                           : std::span<const ClippingResult::Action>(READER_ACTIONS);
+}
+
+bool ClipSelectionActivity::selectionIsWord() const {
+  if (rangeStart < 0) return false;
+  const int first = std::min(rangeStart, selected);
+  const int last = std::max(rangeStart, selected);
+  // A word, not a passage: a few characters, every one of them Chinese.
+  if (last - first + 1 > static_cast<int>(vocabText::MAX_WORD_BYTES / 3)) return false;
+  for (int i = first; i <= last; ++i) {
+    if (wordDetect::shapeOf(cleanWordStart(words[i].text)).ideograph.empty()) return false;
+  }
+  return true;
 }
 
 Rect ClipSelectionActivity::actionRect() const {
@@ -671,11 +771,11 @@ Rect ClipSelectionActivity::actionRect() const {
   safe.width = rightEdge - safe.x;
   safe.height = bottomEdge - safe.y;
   const int font = uiScaleSpec().smallFontId;
-  const int labelWidth =
-      std::max({renderer.getTextWidth(font, tr(STR_LOOKUP)), renderer.getTextWidth(font, tr(STR_CLIP)),
-                renderer.getTextWidth(font, tr(STR_BOOKMARK_OPTION))});
+  const auto actions = selectionActions();
+  int labelWidth = 0;
+  for (const auto action : actions) labelWidth = std::max(labelWidth, renderer.getTextWidth(font, actionLabel(action)));
   const int padding = metrics.menuSpacing;
-  const int count = mode == Mode::DefinitionLookup ? 1 : 3;
+  const int count = static_cast<int>(actions.size());
   const int width = std::min(safe.width, count * (labelWidth + padding * 2) + padding * (count + 1));
   const int lines = labelWidth > (width - padding * (count + 1)) / count ? 2 : 1;
   const int height = std::max(36, renderer.getLineHeight(font) * lines + padding * 2);
@@ -684,6 +784,13 @@ Rect ClipSelectionActivity::actionRect() const {
   while (first < last && words[first].pageOffset < currentPageOffset) ++first;
   return selectionGeometry::actions(safe, selectionTop(), height + padding * 2, metrics.verticalSpacing, width,
                                     words[first].x - padding);
+}
+
+void ClipSelectionActivity::drawActions() const {
+  const auto actions = selectionActions();
+  std::array<const char*, std::size(CHINESE_READER_ACTIONS)> labels{};
+  for (size_t i = 0; i < actions.size(); ++i) labels[i] = actionLabel(actions[i]);
+  GUI.drawSelectionActions(renderer, actionRect(), labels.data(), static_cast<int>(actions.size()));
 }
 
 int ClipSelectionActivity::textOffset() const {
@@ -872,7 +979,7 @@ void ClipSelectionActivity::drawSelection() const {
       GUI.drawSelectionHandle(renderer, handleRect(first, true), !words[first].isRtl);
     if (words[last].pageOffset == currentPageOffset)
       GUI.drawSelectionHandle(renderer, handleRect(last, false), words[last].isRtl);
-    if (!touchDragSelecting) GUI.drawSelectionActions(renderer, actionRect(), mode == Mode::DefinitionLookup ? 1 : 3);
+    if (!touchDragSelecting) drawActions();
   } else {
     const WordBox& cursor = words[selected];
     renderer.drawRect(cursor.x + offsetX, cursor.y + offset, cursor.width, cursor.height, true);

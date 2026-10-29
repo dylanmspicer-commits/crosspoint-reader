@@ -21,6 +21,7 @@
 #include "activities/settings/SettingsActivity.h"
 #include "components/UITheme.h"
 #include "util/DictionaryRegistry.h"
+#include "util/DictionarySet.h"
 #include "util/SlideSwitch.h"
 
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
@@ -142,9 +143,9 @@ inline SettingInfo buildFontSizeSetting(const SdCardFontRegistry* registry) {
 }
 
 // Build the dictionary selection setting dynamically from the folders discovered
-// under /dictionaries. "None" plus one option per dictionary; the selected folder
-// name persists in SETTINGS.dictionaryName (saved/loaded manually in
-// CrossPointSettings::toJson/fromJson — the generic loop skips dynamic entries).
+// under /dictionaries. "None", "All dictionaries", then one option per dictionary;
+// the selected folder name (or DictionarySet::ALL_DICTIONARIES) persists in SETTINGS.dictionaryName (saved/loaded
+// manually in CrossPointSettings::toJson/fromJson — the generic loop skips dynamic entries).
 inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& dictionaries) {
   std::vector<std::string> folderNames;
   folderNames.reserve(dictionaries.size());
@@ -155,28 +156,35 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
   s.nameId = StrId::STR_DICTIONARY;
   s.key = "dictionaryName";  // web settings API; persisted by name, not by the generic loop
   s.type = SettingType::ENUM;
-  s.enumStringValues.reserve(folderNames.size() + 1);
+  s.enumStringValues.reserve(folderNames.size() + 2);
   s.enumStringValues.push_back(I18N.get(StrId::STR_NONE_OPT));
+  s.enumStringValues.push_back(I18N.get(StrId::STR_DICT_ALL));
   s.enumStringValues.insert(s.enumStringValues.end(), folderNames.begin(), folderNames.end());
   s.category = StrId::STR_CAT_READER;
 
   s.valueGetter = [folderNames]() -> uint8_t {
+    if (strcmp(SETTINGS.dictionaryName, DictionarySet::ALL_DICTIONARIES) == 0) return 1;
     for (size_t i = 0; i < folderNames.size(); i++) {
       // Compare within the settings field capacity: an over-long folder name is
       // stored truncated, and must still match its list entry.
       if (strncmp(folderNames[i].c_str(), SETTINGS.dictionaryName, sizeof(SETTINGS.dictionaryName) - 1) == 0) {
-        return static_cast<uint8_t>(i + 1);
+        return static_cast<uint8_t>(i + 2);
       }
     }
     return 0;  // "None", also when the stored folder no longer exists
   };
 
   s.valueSetter = [folderNames](uint8_t v) {
-    if (v == 0 || v > folderNames.size()) {
+    if (v == 1) {
+      strncpy(SETTINGS.dictionaryName, DictionarySet::ALL_DICTIONARIES, sizeof(SETTINGS.dictionaryName) - 1);
+      SETTINGS.dictionaryName[sizeof(SETTINGS.dictionaryName) - 1] = '\0';
+      return;
+    }
+    if (v == 0 || v > folderNames.size() + 1) {
       SETTINGS.dictionaryName[0] = '\0';
       return;
     }
-    strncpy(SETTINGS.dictionaryName, folderNames[v - 1].c_str(), sizeof(SETTINGS.dictionaryName) - 1);
+    strncpy(SETTINGS.dictionaryName, folderNames[v - 2].c_str(), sizeof(SETTINGS.dictionaryName) - 1);
     SETTINGS.dictionaryName[sizeof(SETTINGS.dictionaryName) - 1] = '\0';
   };
 

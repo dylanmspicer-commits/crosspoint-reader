@@ -60,7 +60,9 @@ bool copyBytes(HalFile& in, HalFile& out, uint16_t length) {
   }
   return true;
 }
-constexpr const char* STORE_SUFFIXES[] = {"", ".bak", ".tmp", ".deleted", ".migrate.bak"};
+// Every per-book file named after the store, moved and deleted with the book. The
+// vocabulary list (VocabStore) shares the name so it follows the book too.
+constexpr const char* STORE_SUFFIXES[] = {"", ".bak", ".tmp", ".deleted", ".migrate.bak", ".vocab", ".vocab.tmp"};
 enum class MovePhase { Check, Move, Rollback };
 
 bool moveStoreFiles(const std::string& from, const std::string& to, const MovePhase phase) {
@@ -648,6 +650,10 @@ bool ClippingStore::writeToFile(const std::string* replacementText, const size_t
     clippingRef(i).textOffset = newTextOffsets[i];
   }
   return true;
+}
+
+std::string ClippingStore::vocabPathForBook(const std::string& filePath) {
+  return storeFilePathForBook(filePath, "epub") + ".vocab";
 }
 
 bool ClippingStore::deleteForFilePath(const std::string& filePath, const std::string& bookType) {

@@ -41,7 +41,9 @@ struct PageResult {
 };
 
 struct ClippingResult {
-  enum class Action : uint8_t { Clip, Lookup, Bookmark };
+  // Clip saves a highlight; Note saves one after asking for note text; SaveWord
+  // adds the selected Chinese word to the book's vocabulary list.
+  enum class Action : uint8_t { Clip, Lookup, Bookmark, Note, SaveWord };
   Action action = Action::Clip;
   std::string text;
   uint16_t startPageOffset = 0;

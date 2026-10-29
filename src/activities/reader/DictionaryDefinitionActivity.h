@@ -12,7 +12,7 @@
 #include "ClipSelectionActivity.h"
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
-#include "util/Dictionary.h"
+#include "util/DictionarySet.h"
 
 // Paged viewer for one dictionary definition. HTML definitions are laid out
 // through the EPUB chapter parser into styled Pages; anything else (plain
@@ -26,7 +26,7 @@ class DictionaryDefinitionActivity final : public Activity {
         content{.headword = std::move(headword), .text = std::move(definition)},
         htmlDefinition(htmlDefinition) {}
 
-  bool enableLookup(Dictionary& dictionary, std::string&& query);
+  bool enableLookup(DictionarySet& dictionary, std::string&& query);
 
   void onEnter() override;
   void onExit() override;
@@ -82,8 +82,8 @@ class DictionaryDefinitionActivity final : public Activity {
   };
 
   struct LookupState {
-    explicit LookupState(Dictionary& dictionary) : dictionary(dictionary) {}
-    Dictionary& dictionary;  // Owned by the retained DictionaryWordSelectActivity parent.
+    explicit LookupState(DictionarySet& dictionary) : dictionary(dictionary) {}
+    DictionarySet& dictionary;  // Owned by the retained DictionaryWordSelectActivity parent.
     std::array<HistoryEntry, 16> history;
     size_t depth = 0;
     std::string query;
@@ -102,13 +102,23 @@ class DictionaryDefinitionActivity final : public Activity {
   void navigateDefinition(bool back);
   bool restoreCurrentDefinition(bool styled);
   void showMessage(StrId message);
+  // The Save Word strip under the body exists whenever a book is open, so the
+  // layout stays the same across every entry of one lookup chain.
+  bool reservesSaveStrip() const;
+  bool canSaveWord() const;
+  Rect saveButtonRect() const;
+  void saveHeadword();
+  void refreshSavedState();
 
   Definition content;
-  const bool htmlDefinition;
+  // Follows the dictionary of the shown entry: nested lookups can land in another one.
+  bool htmlDefinition;
   std::unique_ptr<LookupState> lookup;
   StrId message = StrId::STR_DICT_NOT_FOUND;
   unsigned long messageTime = 0;
   bool messageVisible = false;
   bool initialLayoutFailed = false;
+  bool headwordSaved = false;  // content.headword is in the book's vocabulary list
+  std::string savedStateFor;   // headword headwordSaved was read for
   ButtonNavigator buttonNavigator;
 };

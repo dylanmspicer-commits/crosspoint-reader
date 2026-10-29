@@ -475,6 +475,26 @@ void Dictionary::locateAll(LookupSession& session, const char* target, DictEntry
   }
 }
 
+bool Dictionary::hasHeadwords(const char* const* words, const size_t count, bool* found) {
+  for (size_t i = 0; i < count; ++i) found[i] = false;
+  LookupSession session;
+  if (!openSession(session) || session.sampleCount == 0) return false;
+  for (size_t i = 0; i < count; ++i) {
+    const uint32_t startByte = bisectSamples(session.qidx, session.idx, session.sampleCount, words[i]);
+    if (!session.idx.seekSet(startByte)) return false;
+    // Same bounded scan as locateAll(), stopping at the first headword >= target.
+    while (static_cast<uint32_t>(session.idx.position()) < session.idxSize) {
+      if (readWordInto(session.idx, wordBuf, sizeof(wordBuf)) < 0) break;
+      uint8_t suffix[8];
+      if (session.idx.read(suffix, 8) != 8) break;
+      const int cmp = StringUtils::asciiCaseCmp(wordBuf, words[i]);
+      if (cmp == 0) found[i] = true;
+      if (cmp >= 0) break;
+    }
+  }
+  return true;
+}
+
 DictLocation Dictionary::locateByOrdinal(LookupSession& session, uint32_t ordinal) {
   DictLocation result;
 
