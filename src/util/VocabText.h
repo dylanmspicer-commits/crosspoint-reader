@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,22 +10,41 @@
 #include "WordDetect.h"
 
 // Text side of a book's vocabulary list: the line format of the per-book file
-// and the short gloss shown under each word. One entry per line, "word\tgloss";
-// neither field can hold a tab or newline once sanitized.
+// and the short gloss shown under each word. One entry per line:
+//   word \t gloss \t sentence \t spineIndex \t page \t textOffset
+// Lines written before the sentence and position were added have only the
+// first two fields. Sanitized fields never hold a tab or newline.
 namespace vocabText {
 
 inline constexpr size_t MAX_WORD_BYTES = 64;
 inline constexpr size_t MAX_GLOSS_BYTES = 96;
+inline constexpr size_t MAX_SENTENCE_BYTES = 200;
+// Longest saved word in characters: MAX_WORD_BYTES of 3-byte CJK characters.
+inline constexpr size_t MAX_WORD_CHARS = MAX_WORD_BYTES / 3;
+// Longest line formatLine() writes (three text fields, three numbers, separators), with margin.
+inline constexpr size_t MAX_LINE_BYTES = 512;
+inline constexpr uint32_t NO_POSITION = UINT32_MAX;
 
 struct Entry {
   std::string word;
   std::string gloss;
+  std::string sentence;  // where the word was found; empty when unknown
+  uint32_t spineIndex = NO_POSITION;
+  uint32_t page = NO_POSITION;
+  uint32_t textOffset = NO_POSITION;  // visible-text offset in the chapter, as clippings use
+
+  bool hasPosition() const { return spineIndex != NO_POSITION && page != NO_POSITION; }
 };
 
-inline bool hasIdeograph(const std::string_view text) {
+inline bool hasIdeograph(const std::string_view text) { return wordDetect::hasIdeograph(text); }
+
+// True when a layout token ends a sentence: it holds 。！？ (or ASCII ! ?),
+// possibly with a closing quote attached, as in "了。”".
+inline bool endsSentence(const std::string_view token) {
   size_t i = 0;
-  while (i < text.size()) {
-    if (wordDetect::isIdeograph(wordDetect::nextCodepoint(text, i))) return true;
+  while (i < token.size()) {
+    const uint32_t cp = wordDetect::nextCodepoint(token, i);
+    if (cp == 0x3002 || cp == 0xFF01 || cp == 0xFF1F || cp == '!' || cp == '?') return true;
   }
   return false;
 }
@@ -56,7 +76,22 @@ inline std::string sanitize(const std::string_view text, const size_t maxBytes) 
   return out;
 }
 
-inline std::string formatLine(const Entry& entry) { return entry.word + '\t' + entry.gloss + '\n'; }
+inline std::string formatLine(const Entry& entry) {
+  const auto number = [](const uint32_t value) { return value == NO_POSITION ? std::string() : std::to_string(value); };
+  return entry.word + '\t' + entry.gloss + '\t' + entry.sentence + '\t' + number(entry.spineIndex) + '\t' +
+         number(entry.page) + '\t' + number(entry.textOffset) + '\n';
+}
+
+// A decimal field, or NO_POSITION when empty or not a number.
+inline uint32_t parseNumber(const std::string_view field) {
+  if (field.empty() || field.size() > 10) return NO_POSITION;
+  uint64_t value = 0;
+  for (const char c : field) {
+    if (c < '0' || c > '9') return NO_POSITION;
+    value = value * 10 + static_cast<uint64_t>(c - '0');
+  }
+  return value >= NO_POSITION ? NO_POSITION : static_cast<uint32_t>(value);
+}
 
 // Every entry in a vocabulary file's text, in saved order. Blank lines are skipped.
 inline std::vector<Entry> parse(const std::string_view text) {
@@ -65,11 +100,22 @@ inline std::vector<Entry> parse(const std::string_view text) {
   while (start < text.size()) {
     size_t end = text.find('\n', start);
     if (end == std::string_view::npos) end = text.size();
-    const std::string_view line = text.substr(start, end - start);
-    const size_t tab = line.find('\t');
+    std::string_view line = text.substr(start, end - start);
+    std::string_view fields[6];
+    size_t count = 0;
+    while (count < 6) {
+      const size_t tab = line.find('\t');
+      fields[count++] = line.substr(0, tab);
+      if (tab == std::string_view::npos) break;
+      line.remove_prefix(tab + 1);
+    }
     Entry entry;
-    entry.word = std::string(line.substr(0, tab));
-    if (tab != std::string_view::npos) entry.gloss = std::string(line.substr(tab + 1));
+    entry.word = std::string(fields[0]);
+    entry.gloss = std::string(fields[1]);
+    entry.sentence = std::string(fields[2]);
+    entry.spineIndex = parseNumber(fields[3]);
+    entry.page = parseNumber(fields[4]);
+    entry.textOffset = parseNumber(fields[5]);
     if (!entry.word.empty()) out.push_back(std::move(entry));
     start = end + 1;
   }
@@ -112,6 +158,41 @@ inline std::string makeGloss(const std::string_view definition, const std::strin
     gloss += "\xE2\x80\xA6";  // "…"
   }
   return gloss;
+}
+
+// Which tokens of a page belong to a saved word. joinedBefore[i] is true when
+// token i continues token i-1 with no gap in the text, across a line break too.
+// Words are matched longest first and never across punctuation, so 国。家 does
+// not match 国家.
+// saved must be sorted.
+inline std::vector<bool> markSavedWords(const std::vector<wordDetect::Token>& tokens,
+                                        const std::vector<bool>& joinedBefore, const std::vector<std::string>& saved,
+                                        const size_t maxChars) {
+  std::vector<bool> marked(tokens.size(), false);
+  if (saved.empty() || maxChars == 0) return marked;
+  std::vector<wordDetect::TokenShape> shapes;
+  shapes.reserve(tokens.size());
+  for (const auto& token : tokens) shapes.push_back(wordDetect::shapeOf(token.text));
+  std::string candidate;
+  candidate.reserve(maxChars * 4);
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (shapes[i].ideograph.empty()) continue;
+    // How far the run of characters reaches from token i.
+    size_t reach = 1;
+    while (reach < maxChars && i + reach < tokens.size() && joinedBefore[i + reach] &&
+           shapes[i + reach - 1].openRight && !shapes[i + reach].ideograph.empty() && shapes[i + reach].openLeft) {
+      ++reach;
+    }
+    for (size_t length = reach; length >= 1; --length) {
+      candidate.clear();
+      for (size_t k = i; k < i + length; ++k) candidate.append(shapes[k].ideograph);
+      if (!std::binary_search(saved.begin(), saved.end(), candidate)) continue;
+      for (size_t k = i; k < i + length; ++k) marked[k] = true;
+      i += length - 1;
+      break;
+    }
+  }
+  return marked;
 }
 
 }  // namespace vocabText

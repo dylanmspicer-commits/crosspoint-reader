@@ -31,6 +31,7 @@ class DictionarySet {
   // True when at least one opened.
   bool open(const char* setting);
   bool isOpen() const { return count != 0; }
+  void close() { open(nullptr); }
 
   bool needsIndex();
   bool buildIndex(void (*yieldFn)(void*) = nullptr, void* ctx = nullptr, Dictionary::IndexResult* outResult = nullptr);
@@ -42,6 +43,10 @@ class DictionarySet {
   // first real failure (read, memory, decompression) ahead of NotFound.
   bool lookup(const char* word, std::string& definitionOut, std::string& matchedHeadwordOut,
               Dictionary::LookupResult* outResult = nullptr);
+
+  // The entry from the first dictionary that has the word only, for one-line
+  // summaries: reads one definition instead of every dictionary's.
+  bool lookupFirst(const char* word, std::string& definitionOut, std::string& matchedHeadwordOut);
 
   // Format of the definition the last successful lookup() returned: HTML only
   // when every part was HTML; mixed parts are converted to plain text.

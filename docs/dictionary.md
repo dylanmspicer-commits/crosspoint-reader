@@ -56,6 +56,8 @@ Two ways to start a lookup while reading:
 - Press and hold a word. The whole word is selected, with a handle at each end and **Highlight**, **Add Note** and **Look Up** above it. Drag either handle to change the selection, then tap an action.
 - Chinese text has no spaces between words, so the reader checks your dictionaries for the longest word (up to six characters) that contains the held character, and selects it. This works when a word continues onto the next line or page. If the selection is too short, for example two characters of a four-character idiom, drag a handle to extend it. Detection needs the dictionary's index, which the first **Look Up** builds; until then a single character is selected.
 - An English word hyphenated at the end of a line is selected as one word.
+- A one-line preview, such as `túshūguǎn · library`, appears above the buttons: the start of the entry in the first dictionary that has the selection. It updates when you release a handle, and is hidden when no dictionary has the selection or the dictionary has not been indexed yet.
+- **Look Up** and **Save Word** use only the Chinese characters of a selection, never punctuation next to them, and the shading and handles stop at the character.
 
 On the very first lookup with a dictionary (and again whenever the `.idx` or `.syn` source file changes), the reader shows *"Indexing dictionary…"* while it builds small sidecar files next to them — a `.qidx` for the word index, and a `.sidx` when a `.syn` synonym file is present. Each sidecar is rebuilt independently, only when its own source changes. This takes a few seconds for large dictionaries and makes all subsequent lookups fast. The sidecars can be deleted safely at any time — they will simply be rebuilt.
 
@@ -78,7 +80,7 @@ Definitions are drawn in your reading font. Dictionaries may use IPA symbols (e.
 - **Confirm** — select words or a phrase inside the definition, then choose **Look Up**
 - **Long press on text** — select the touched word on touchscreen devices when touch reader controls are enabled
 - **Back during selection** — cancel selection
-- **Back while reading a definition** — return to the previous definition, or to book word selection at the first definition
+- **Back while reading a definition** — return to the previous definition, or to book word selection at the first definition. If you started the lookup by pressing and holding text in the book, you return to reading instead
 - **Long Back while reading a definition** — hold **Back** for at least one second, then release to close all definitions and return directly to reading
 - **Long press the header Back arrow** — close all definitions and return directly to reading on touchscreen devices, even when touch reader controls are disabled
 
@@ -114,8 +116,9 @@ The screen also closes if a failed forward lookup cannot reload the current defi
 
 Each book has its own list of Chinese words you want to remember.
 
-- **Save a word:** press and hold a Chinese word in the book, then tap **Save Word** (shown when the selection is a few Chinese characters). Or tap **Save Word** at the bottom of a Chinese word's definition page; it shows **Saved** once the word is in the list.
+- **Save a word:** press and hold a Chinese word in the book, then tap **Save Word** (shown when the selection is a few Chinese characters). Or tap **Save Word** at the bottom of a Chinese word's definition page; it shows **Saved** once the word is in the list. The sentence the word came from (cut at 。！？, about 60 characters, with "…" where it was cut) and its place in the book are saved with it, also when saving from a definition page opened from the book.
 - **See the list:** open the reader menu and choose **Vocabulary** (shown once the book has a saved word). Each word appears with a one-line note taken from your dictionaries, such as its pinyin and first meaning.
-- **Tap a word** to open its full definition. **Hold a word** (or hold **Confirm**) to delete it.
+- **Tap a word** to see the sentence it came from, with **Definition** (its full entry) and **Go to Passage** (back to that place in the book). Words saved before sentences were kept show their note instead, without **Go to Passage**. **Hold a word** (or hold **Confirm**) to delete it.
+- **Underlines:** saved words get a dotted underline wherever they appear in the book, also when a word runs onto the next line. Turn this off in **Settings → Reader → Underline Saved Words**.
 
-A word is saved once per book. The list is stored with the book's highlights and moves or is deleted along with the book. Up to 2000 words per book.
+A word is saved once per book. The list is stored with the book's highlights and moves or is deleted along with the book. Up to 2000 words per book on the X4 Pro and other ESP32-S3 devices, 500 on the X3 and X4.

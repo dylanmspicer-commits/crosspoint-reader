@@ -214,6 +214,7 @@ struct DictionaryDefinitionActivity {
   bool messageVisible = false;
   bool finished = false;
   bool selectionOpened = false;
+  bool lookupStartedByTouch = false;
   ActivityResult result;
   std::unique_ptr<ClipSelectionActivity> child;
   ActivityResultHandler callback;
@@ -431,6 +432,11 @@ int main() {
   assert(parent.finished && !parent.result.isCancelled);
   reader.onLookupResult(parent.result);
   assert(reader.selectionOpened);
+  // A lookup started by a long-press on the page returns straight to reading.
+  DictionaryDefinitionActivity touchReader;
+  touchReader.lookupStartedByTouch = true;
+  touchReader.onLookupResult(parent.result);
+  assert(!touchReader.selectionOpened);
   // Long Back also exits at the first definition, where there are no ancestors.
   DictionaryDefinitionActivity root;
   root.lookup = std::make_unique<DictionaryDefinitionActivity::LookupState>(dictionary);

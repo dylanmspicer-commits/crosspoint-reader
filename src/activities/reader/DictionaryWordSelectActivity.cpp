@@ -67,6 +67,7 @@ void DictionaryWordSelectActivity::performLookup() {
     }
     auto activity = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
                                                                     std::move(definition), dict.definitionsAreHtml());
+    if (activity) activity->setVocabSource(vocabSource);
     if (!activity || !activity->enableLookup(dict, std::move(lookupText))) {
       LOG_ERR("DICT", "OOM: definition activity");
       popup = Popup::Error;

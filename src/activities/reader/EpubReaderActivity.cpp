@@ -22,6 +22,9 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "../../util/BookmarkFile.h"
 #include "BookmarkEntry.h"
@@ -64,6 +67,7 @@
 #include "util/ButtonNavigator.h"
 #include "util/DictionarySet.h"
 #include "util/ScreenshotUtil.h"
+#include "util/WordDetect.h"
 
 namespace {
 // The X4 Pro and X4 Classic carry the X4's panel but sit outside isXteinkDevice()
@@ -463,6 +467,7 @@ void EpubReaderActivity::openDictionaryWordSelect() {
 
 void EpubReaderActivity::startClipSelection(const int initialX, const int initialY,
                                             const ClipSelectionActivity::Mode mode) {
+  lookupStartedByTouch = initialX >= 0;
   if (!section || !epub || section->currentPage < 0 || section->currentPage >= section->pageCount) return;
 
   const int pageNumber = section->currentPage;
@@ -560,8 +565,11 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
         requestUpdate();
         return;
       }
+      // Lets Save Word on the definition page keep where the word was found.
+      if (!clipping.sentence.empty()) lookup->setVocabSource(vocabEntryFor(clipping, context));
       startActivityForResult(std::move(lookup), [this](const ActivityResult& result) {
-        if (!result.isCancelled) openDictionaryWordSelect();
+        // A long-press lookup returns to reading; button lookups go back to word selection.
+        if (!result.isCancelled && !lookupStartedByTouch) openDictionaryWordSelect();
       });
       return;
     }
@@ -570,22 +578,36 @@ void EpubReaderActivity::startClipSelection(const int initialX, const int initia
       return;
     }
     if (clipping.action == ClippingResult::Action::SaveWord) {
-      saveVocabWord(Dictionary::cleanWord(clipping.text.c_str()));
+      saveVocabWord(vocabEntryFor(clipping, context));
       return;
     }
     saveClipping(clipping, context, {});
   });
 }
 
-void EpubReaderActivity::saveVocabWord(const std::string& word) {
-  std::string gloss;
+vocabText::Entry EpubReaderActivity::vocabEntryFor(const ClippingResult& clipping, const ClipContext& context) {
+  vocabText::Entry entry;
+  entry.word = Dictionary::cleanWord(clipping.text.c_str());
+  entry.sentence = clipping.sentence;
+  entry.spineIndex = context.spineIndex;
+  entry.page = static_cast<uint32_t>(context.pageNumber + clipping.startPageOffset);
+  entry.textOffset = clipping.startOffset;
+  return entry;
+}
+
+void EpubReaderActivity::saveVocabWord(vocabText::Entry entry) {
   DictionarySet dictionaries;
   if (dictionaries.open(SETTINGS.dictionaryName)) {
     // A lookup without the index scans it whole; build it once, as Look Up does.
     if (dictionaries.needsIndex()) dictionaries.buildIndex();
-    gloss = VocabStore::glossFor(dictionaries, word);
+    entry.gloss = VocabStore::glossFor(dictionaries, entry.word);
   }
-  switch (VOCAB.add(word, gloss)) {
+  VocabStore::AddResult added;
+  {
+    RenderLock lock;  // the page render reads the saved words to mark them
+    added = VOCAB.add(std::move(entry));
+  }
+  switch (added) {
     case VocabStore::AddResult::Added:
       clippingMessage = StrId::STR_VOCAB_SAVED;
       break;
@@ -1377,7 +1399,15 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     }
     case EpubReaderMenuActivity::MenuAction::VOCABULARY: {
       if (auto list = makeUniqueNoThrow<VocabularyListActivity>(renderer, mappedInput)) {
-        startActivityForResult(std::move(list), [this](const ActivityResult&) { requestUpdate(); });
+        startActivityForResult(std::move(list), [this](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            if (const auto* progress = std::get_if<ProgressChangeResult>(&result.data)) {
+              applyProgressChange(*progress);
+              return;
+            }
+          }
+          requestUpdate();
+        });
       } else {
         LOG_ERR("VOCAB", "OOM: vocabulary list");
       }
@@ -2199,6 +2229,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     if (BoardConfig::isEegoA4()) drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
     if (absoluteImageGrayscale || needsTextGrayscale) {
       page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+      if (BoardConfig::isEegoA4()) drawVocabUnderlines(*page, fontId, orientedMarginTop, orientedMarginLeft);
     } else {
       page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
     }
@@ -2215,6 +2246,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
 
   drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  drawVocabUnderlines(*page, fontId, orientedMarginTop, orientedMarginLeft);
   renderStatusBar();
   const auto tBwRender = millis();
 
@@ -2565,6 +2597,91 @@ void EpubReaderActivity::renderStatusBar() const {
 
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
                     section ? section->isBuilding() : false);
+}
+
+void EpubReaderActivity::drawVocabUnderlines(const Page& page, const int fontId, const int orientedMarginTop,
+                                             const int orientedMarginLeft) const {
+  if (!SETTINGS.underlineSavedWords || VOCAB.count() == 0) return;
+  const auto started = millis();
+  struct PageWord {
+    const PageLine* line;
+    uint16_t index;
+  };
+  // Size the per-page lists once: a page of Chinese is several hundred tokens.
+  size_t capacity = 0;
+  for (const auto& element : page.elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto& block = static_cast<const PageLine&>(*element).getBlock();
+    if (block && block->valid()) capacity += block->wordCount();
+  }
+  std::vector<PageWord> pageWords;
+  std::vector<wordDetect::Token> tokens;
+  std::vector<bool> joinedBefore;
+  pageWords.reserve(capacity);
+  tokens.reserve(capacity);
+  joinedBefore.reserve(capacity);
+  uint32_t previousEnd = UINT32_MAX;
+  // A paragraph can start with a whitespace-only token, which is skipped below.
+  bool paragraphStartPending = false;
+  for (const auto& element : page.elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto& line = static_cast<const PageLine&>(*element);
+    const auto& block = line.getBlock();
+    if (!block || !block->valid() || block->getBlockStyle().isRtl) continue;
+    for (uint16_t i = 0; i < block->wordCount(); ++i) {
+      if (block->wordStartsParagraph(i)) paragraphStartPending = true;
+      const char* text = block->wordText(i);
+      if (!clippingText::hasVisibleText(text)) continue;
+      const auto range = block->wordSourceRange(i);
+      // Joined when no text separates the two tokens, even across a line break.
+      joinedBefore.push_back(!paragraphStartPending && previousEnd != UINT32_MAX && range.start != UINT32_MAX &&
+                             range.start <= previousEnd);
+      paragraphStartPending = false;
+      previousEnd = range.end;
+      if (clippingText::hasEmSpacePrefix(text)) text += 3;
+      tokens.push_back({text});
+      pageWords.push_back({&line, i});
+    }
+  }
+  const auto marked = vocabText::markSavedWords(tokens, joinedBefore, VOCAB.savedWords(),
+                                                std::min(VOCAB.longestWordChars(), vocabText::MAX_WORD_CHARS));
+  size_t underlined = 0;
+  constexpr int DOT_STEP = 4;
+  for (size_t t = 0; t < tokens.size(); ++t) {
+    if (!marked[t]) continue;
+    const PageLine& line = *pageWords[t].line;
+    const auto& block = *line.getBlock();
+    const uint16_t i = pageWords[t].index;
+    const int wordFont = clippingWordFont(renderer, fontId, block, i);
+    const char* text = block.wordText(i);
+    const auto style = static_cast<EpdFontFamily::Style>(block.wordStyle(i) & ~EpdFontFamily::UNDERLINE);
+    const int8_t spacing = block.getBlockStyle().characterSpacing;
+    const int advance = renderer.getTextAdvanceX(wordFont, text, style, spacing);
+    if (advance <= 0) continue;
+    const Rect rect = clippingWordRect(renderer, fontId, line, i, orientedMarginTop, orientedMarginLeft, advance);
+    // Dot only the character, not punctuation attached to it (same trim as
+    // ClipSelectionActivity::highlightSpan, measured from the em-space-free text).
+    const std::string_view visible = tokens[t].text;
+    const auto keep = wordDetect::highlightRange(visible, true, true);
+    int left = 0;
+    int right = rect.width;
+    if (keep.begin != 0 || keep.end != visible.size()) {
+      const std::string before(visible.substr(0, keep.begin));
+      const std::string through(visible.substr(0, keep.end));
+      left = before.empty() ? 0 : renderer.getTextAdvanceX(wordFont, before.c_str(), style, spacing);
+      right = std::min(rect.width, renderer.getTextAdvanceX(wordFont, through.c_str(), style, spacing));
+    }
+    const int y = rect.y + renderer.getFontAscenderSize(wordFont) + 3;
+    // Dots on a fixed grid, so a word split over several tokens reads as one line.
+    const int x0 = rect.x + left;
+    const int x1 = rect.x + std::max(left + 1, right);
+    for (int x = x0 + (DOT_STEP - x0 % DOT_STEP) % DOT_STEP; x + 1 < x1; x += DOT_STEP) {
+      renderer.fillRect(x, y, 2, 2, true);
+    }
+    ++underlined;
+  }
+  LOG_DBG("VOCAB", "Underline pass: tokens=%u underlined=%u time=%lums", static_cast<unsigned>(tokens.size()),
+          static_cast<unsigned>(underlined), millis() - started);
 }
 
 // ---------------------------------------------------------------------------

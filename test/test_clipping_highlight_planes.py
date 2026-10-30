@@ -52,10 +52,16 @@ int main() {
   bool needsTextGrayscale = true;
   auto drawClippingHighlights = [&](Page&, int, int, int) { assert(++order == 1); };
   auto renderStatusBar = [&] { assert(++order == 3); };
+  // A4 gray planes replace the page, so saved-word underlines are redrawn after the text.
+  bool underlined = false;
+  auto drawVocabUnderlines = [&](Page&, int, int, int) {
+    assert(order == 2);
+    underlined = true;
+  };
 """ + render + r"""
   BoardConfig::a4 = true;
   renderGrayscalePass();
-  assert(order == 3);
+  assert(order == 3 && underlined);
   order = 0;
   needsTextGrayscale = false;
   renderGrayscalePass();

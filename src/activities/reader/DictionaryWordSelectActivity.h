@@ -8,6 +8,7 @@
 
 #include "activities/Activity.h"
 #include "util/DictionarySet.h"
+#include "util/VocabText.h"
 
 // Controller for dictionary lookup: renders the background page, runs the
 // lookup against the active StarDict dictionary, and either opens
@@ -24,6 +25,9 @@ class DictionaryWordSelectActivity final : public Activity {
         marginTop(marginTop),
         lookupText(std::move(lookupText)) {}
 
+  // Where the looked-up word was found, for Save Word on the definition page.
+  void setVocabSource(vocabText::Entry source) { vocabSource = std::move(source); }
+
   void onEnter() override;
   void loop() override;
   void render(RenderLock&&) override;
@@ -39,6 +43,7 @@ class DictionaryWordSelectActivity final : public Activity {
   int fontId = 0;
 
   std::string lookupText;
+  vocabText::Entry vocabSource;
   bool lookupPending = false;
   DictionarySet dict;
   bool dictOpenAttempted = false;

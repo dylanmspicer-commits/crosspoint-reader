@@ -13,6 +13,7 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 #include "util/DictionarySet.h"
+#include "util/VocabText.h"
 
 // Paged viewer for one dictionary definition. HTML definitions are laid out
 // through the EPUB chapter parser into styled Pages; anything else (plain
@@ -27,6 +28,8 @@ class DictionaryDefinitionActivity final : public Activity {
         htmlDefinition(htmlDefinition) {}
 
   bool enableLookup(DictionarySet& dictionary, std::string&& query);
+  // Where the first entry's word was found in the book; Save Word keeps it.
+  void setVocabSource(vocabText::Entry source) { vocabSource = std::move(source); }
 
   void onEnter() override;
   void onExit() override;
@@ -120,5 +123,6 @@ class DictionaryDefinitionActivity final : public Activity {
   bool initialLayoutFailed = false;
   bool headwordSaved = false;  // content.headword is in the book's vocabulary list
   std::string savedStateFor;   // headword headwordSaved was read for
+  vocabText::Entry vocabSource;
   ButtonNavigator buttonNavigator;
 };

@@ -46,6 +46,8 @@ struct ClippingResult {
   enum class Action : uint8_t { Clip, Lookup, Bookmark, Note, SaveWord };
   Action action = Action::Clip;
   std::string text;
+  // The sentence around a Chinese word picked for Look Up or Save Word; empty otherwise.
+  std::string sentence;
   uint16_t startPageOffset = 0;
   uint16_t endPageOffset = 0;
   uint16_t startWordIndex = 0;

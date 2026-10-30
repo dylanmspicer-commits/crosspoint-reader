@@ -829,9 +829,13 @@ void DictionaryDefinitionActivity::refreshSavedState() {
 }
 
 void DictionaryDefinitionActivity::saveHeadword() {
-  const std::string word = content.headword;
-  const std::string gloss = VocabStore::glossFor(lookup->dictionary, word);
-  const auto result = VOCAB.add(word, gloss);
+  vocabText::Entry entry;
+  // The sentence and position belong to the word looked up from the book, not to later lookups.
+  if (lookup->depth == 0) entry = vocabSource;
+  entry.word = content.headword;
+  entry.gloss = VocabStore::glossFor(lookup->dictionary, entry.word);
+  const std::string word = entry.word;
+  const auto result = VOCAB.add(std::move(entry));
   RenderLock lock;
   headwordSaved = result == VocabStore::AddResult::Added || result == VocabStore::AddResult::AlreadySaved;
   savedStateFor = word;

@@ -296,6 +296,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t characterSpacing = CHARACTER_SPACING_OFFSET;
   int8_t getCharacterSpacing() const { return static_cast<int8_t>(characterSpacing - CHARACTER_SPACING_OFFSET); }
   uint8_t textAntiAliasing = 1;
+  // Dotted underline under words saved to the book's vocabulary list (0 = off, 1 = on)
+  uint8_t underlineSavedWords = 1;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
   // X4 Pro: double-click power toggles the frontlight. Disabling frees the

@@ -151,6 +151,16 @@ bool DictionarySet::lookup(const char* word, std::string& definitionOut, std::st
   return true;
 }
 
+bool DictionarySet::lookupFirst(const char* word, std::string& definitionOut, std::string& matchedHeadwordOut) {
+  for (size_t i = 0; i < count; ++i) {
+    if (dictionaries[i]->lookup(word, definitionOut, matchedHeadwordOut)) {
+      lastHtml = dictionaries[i]->definitionsAreHtml();
+      return true;
+    }
+  }
+  return false;
+}
+
 bool DictionarySet::hasHeadwords(const char* const* words, const size_t wordCount, bool* found) {
   for (size_t i = 0; i < wordCount; ++i) found[i] = false;
   auto scratch = makeUniqueNoThrow<bool[]>(wordCount);

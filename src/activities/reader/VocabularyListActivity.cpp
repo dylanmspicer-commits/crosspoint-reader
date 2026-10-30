@@ -25,9 +25,18 @@ VocabularyListActivity::VocabularyListActivity(GfxRenderer& renderer, MappedInpu
 
 void VocabularyListActivity::onEnter() {
   UiListActivity::onEnter();
-  if (!VOCAB.readAll(entries)) LOG_ERR("VOCAB", "Failed to read the vocabulary list");
+  reloadOffsets();
+}
+
+void VocabularyListActivity::reloadOffsets() {
+  if (!VOCAB.lineOffsets(offsets)) LOG_ERR("VOCAB", "Failed to read the vocabulary list");
   windowStart = -1;
   windowCount = 0;
+}
+
+bool VocabularyListActivity::loadSelected() {
+  if (nav.selected < 0 || nav.selected >= listCount()) return false;
+  return VOCAB.readEntryAt(offsets[static_cast<size_t>(nav.selected)], selectedEntry);
 }
 
 const char* VocabularyListActivity::headerTitle() const { return tr(STR_VOCABULARY); }
@@ -39,7 +48,8 @@ void VocabularyListActivity::refreshRowWindow(const int start) {
   if (clamped == windowStart) return;
   windowCount = std::min(ROW_WINDOW, total - clamped);
   for (int slot = 0; slot < windowCount; ++slot) {
-    const auto& entry = entries[static_cast<size_t>(clamped + slot)];
+    auto& entry = windowEntries[static_cast<size_t>(slot)];
+    if (!VOCAB.readEntryAt(offsets[static_cast<size_t>(clamped + slot)], entry)) entry = {};
     fui::ListItem item;
     item.label = entry.word.c_str();
     item.subtitle = entry.gloss.empty() ? nullptr : entry.gloss.c_str();
@@ -50,8 +60,40 @@ void VocabularyListActivity::refreshRowWindow(const int start) {
 }
 
 void VocabularyListActivity::openSelected() {
-  if (popup.isActive() || nav.selected < 0 || nav.selected >= listCount()) return;
-  const std::string word = entries[static_cast<size_t>(nav.selected)].word;
+  if (popup.isActive() || !loadSelected()) return;
+  const auto& entry = selectedEntry;
+  // The word as the title, the sentence it came from as the body (its gloss for
+  // words saved before sentences were kept).
+  const char* options[] = {tr(STR_DEFINITION), tr(STR_GO_TO_PASSAGE)};
+  popup.showMessage(entry.word.c_str(), entry.sentence.empty() ? entry.gloss.c_str() : entry.sentence.c_str(), options,
+                    entry.hasPosition() ? 2 : 1, 0, [this](const int choice) {
+                      if (choice == 0) {
+                        showDefinition();
+                      } else {
+                        goToPassage();
+                      }
+                    });
+  requestUpdate();
+}
+
+void VocabularyListActivity::goToPassage() {
+  const auto& entry = selectedEntry;
+  if (!entry.hasPosition()) return;
+  ProgressChangeResult result;
+  result.spineIndex = static_cast<int>(entry.spineIndex);
+  result.page = static_cast<int>(entry.page);
+  if (entry.textOffset != vocabText::NO_POSITION) {
+    // The text offset survives font and layout changes; the page is the fallback.
+    result.hasVisibleTextOffset = true;
+    result.visibleTextOffset = entry.textOffset;
+  }
+  setResult(std::move(result));
+  finish();
+}
+
+void VocabularyListActivity::showDefinition() {
+  const std::string word = selectedEntry.word;
+  if (word.empty()) return;
   if (!dictionariesOpened) {
     dictionariesOpened = true;
     if (dictionaries.open(SETTINGS.dictionaryName) && dictionaries.needsIndex()) dictionaries.buildIndex();
@@ -75,8 +117,7 @@ void VocabularyListActivity::openSelected() {
   startActivityForResult(std::move(detail), [this](const ActivityResult&) {
     // Words looked up from inside the entry may have been saved; show them too.
     RenderLock lock;
-    VOCAB.readAll(entries);
-    windowStart = -1;
+    reloadOffsets();
     if (nav.selected >= listCount()) nav.selected = std::max(0, listCount() - 1);
     requestUpdate();
   });
@@ -114,9 +155,8 @@ void VocabularyListActivity::deleteSelected() {
     LOG_ERR("VOCAB", "Failed to delete word %d", static_cast<int>(nav.selected));
     return;
   }
-  RenderLock lock;  // buildScreen() reads the entries on the render task
-  entries.erase(entries.begin() + nav.selected);
-  windowStart = -1;
+  RenderLock lock;  // buildScreen() reads the rows on the render task
+  reloadOffsets();
   if (listCount() == 0) {
     finish();
     return;

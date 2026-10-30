@@ -77,6 +77,14 @@ inline uint32_t nextCodepoint(const std::string_view text, size_t& i) {
   return cp;
 }
 
+inline bool hasIdeograph(const std::string_view text) {
+  size_t i = 0;
+  while (i < text.size()) {
+    if (isIdeograph(nextCodepoint(text, i))) return true;
+  }
+  return false;
+}
+
 // How a token can join a run: its single ideograph, and whether punctuation on
 // either side stops the run from growing past it (e.g. "“中" or "国。").
 struct TokenShape {
@@ -111,6 +119,41 @@ inline TokenShape shapeOf(const std::string_view text) {
   shape.openLeft = !before;
   shape.openRight = !after;
   return shape;
+}
+
+struct ByteRange {
+  size_t begin = 0;
+  size_t end = 0;
+};
+
+// The part of a token to highlight when it ends a selection: its ideograph
+// without the punctuation attached on the trimmed sides ("国。" -> "国").
+// The whole token when it is not a single ideograph.
+inline ByteRange highlightRange(const std::string_view text, const bool trimLeft, const bool trimRight) {
+  ByteRange range{0, text.size()};
+  const TokenShape shape = shapeOf(text);
+  if (shape.ideograph.empty()) return range;
+  const size_t at = static_cast<size_t>(shape.ideograph.data() - text.data());
+  if (trimLeft) range.begin = at;
+  if (trimRight) range.end = at + shape.ideograph.size();
+  return range;
+}
+
+// The ideographs of a selection, without any punctuation: tokens with no
+// ideograph at either end are dropped, and every other token must be a single
+// ideograph. Empty when the selection is not Chinese text.
+inline std::string ideographText(const std::vector<Token>& tokens) {
+  size_t first = 0;
+  size_t last = tokens.size();
+  while (first < last && !hasIdeograph(tokens[first].text)) ++first;
+  while (last > first && !hasIdeograph(tokens[last - 1].text)) --last;
+  std::string out;
+  for (size_t i = first; i < last; ++i) {
+    const TokenShape shape = shapeOf(tokens[i].text);
+    if (shape.ideograph.empty()) return {};
+    out.append(shape.ideograph);
+  }
+  return out;
 }
 
 // Every span of 2..MAX_CHARS ideograph tokens that contains run[hit] and stays

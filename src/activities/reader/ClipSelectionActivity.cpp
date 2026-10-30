@@ -11,10 +11,12 @@
 #include <algorithm>
 #include <climits>
 #include <cstdlib>
+#include <cstring>
 
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "VocabStore.h"
 #include "activities/ActivityResult.h"
 #include "clippings/ClippingText.h"
 #include "clippings/SelectionGeometry.h"
@@ -136,6 +138,9 @@ void ClipSelectionActivity::onEnter() {
     }
     selected = rangeStart = hit;
     selectDictionaryWord(hit);
+    refreshPreview();
+    // A definition page already holds its own dictionaries; do not keep a second set open.
+    if (mode == Mode::DefinitionLookup) dictionaries.close();
     ignoreInitialTouch = true;
   }
   requestUpdate();
@@ -178,9 +183,8 @@ void ClipSelectionActivity::selectDictionaryWord(const int hit) {
   if (candidates.empty()) return;
 
   const unsigned long started = millis();
-  DictionarySet dictionaries;
   // A missing .qidx would make every probe scan the whole index; the first Look Up builds it.
-  if (!dictionaries.open(SETTINGS.dictionaryName) || dictionaries.needsIndex()) {
+  if (!readyDictionaries()) {
     LOG_INF("CLIP", "Word detection skipped: dictionary not ready");
     return;
   }
@@ -493,6 +497,14 @@ void ClipSelectionActivity::confirmSelection(const ClippingResult::Action action
     requestUpdate();
     return;
   }
+  if (action == ClippingResult::Action::Lookup || action == ClippingResult::Action::SaveWord) {
+    // Search with the characters alone: punctuation attached to them is not part of the word.
+    std::string chinese = selectionIdeographs(first, last);
+    if (!chinese.empty()) {
+      result.text = std::move(chinese);
+      result.sentence = sentenceAround(first, last);
+    }
+  }
   result.startPageOffset = words[first].pageOffset;
   result.endPageOffset = words[last].pageOffset;
   result.startWordIndex = words[first].pageWordIndex;
@@ -570,6 +582,8 @@ void ClipSelectionActivity::loop() {
         confirmSelection(selectionActions()[action]);
         return;
       }
+      // The preview line is part of the toolbar: a tap on it keeps the selection.
+      if (!preview.empty() && selectionGeometry::contains(previewRect(), touchX, touchY)) return;
       const int first = std::min(rangeStart, selected);
       const int last = std::max(rangeStart, selected);
       const bool onStart = words[first].pageOffset == currentPageOffset &&
@@ -583,6 +597,7 @@ void ClipSelectionActivity::loop() {
         cancel();
       } else {
         selected = rangeStart = hit;
+        refreshPreview();
         requestUpdate();
       }
     }
@@ -621,6 +636,7 @@ void ClipSelectionActivity::loop() {
     touchDragSelecting = false;
     touchDragHasMoved = false;
     touchDragPageEndIndex = -1;
+    refreshPreview();
     requestUpdate();
     return;
   } else if (mappedInput.wasScreenTouchPressed(touchX, touchY)) {
@@ -666,20 +682,24 @@ void ClipSelectionActivity::loop() {
   const uint8_t buttons = Input::buttonEdges(mappedInput);
   if (buttons & (Input::INPUT_BACK | Input::INPUT_CONFIRM)) {
     handleButtons(buttons);
+    syncPreview();
     return;
   }
 
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Left || swipe == MappedInputManager::SwipeDir::Up) {
     moveToPage(static_cast<int>(currentPageOffset) + 1);
+    syncPreview();
     return;
   }
   if (swipe == MappedInputManager::SwipeDir::Right || swipe == MappedInputManager::SwipeDir::Down) {
     moveToPage(static_cast<int>(currentPageOffset) - 1);
+    syncPreview();
     return;
   }
 
   handleButtons(buttons);
+  syncPreview();
 }
 
 bool ClipSelectionActivity::handleButtons(const uint8_t buttons) {
@@ -721,7 +741,11 @@ Rect ClipSelectionActivity::handleRect(const int index, const bool start) const 
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   const int size = std::max(24, UITheme::getInstance().getMetrics().verticalSpacing * 2);
   const bool left = start != word.isRtl;
-  const int edge = left ? word.x : word.x + word.width;
+  int boxX = 0;
+  int boxWidth = 0;
+  // Sit the handle at the character, not at punctuation attached to it.
+  highlightSpan(index, start, !start, boxX, boxWidth);
+  const int edge = left ? boxX : boxX + boxWidth;
   return Rect{std::clamp(edge - (left ? size : 0), safe.x, safe.x + safe.width - size),
               std::clamp(word.y + textOffset() + word.height, safe.y, safe.y + safe.height - size), size, size};
 }
@@ -752,14 +776,123 @@ bool ClipSelectionActivity::selectionIsWord() const {
   const int first = std::min(rangeStart, selected);
   const int last = std::max(rangeStart, selected);
   // A word, not a passage: a few characters, every one of them Chinese.
-  if (last - first + 1 > static_cast<int>(vocabText::MAX_WORD_BYTES / 3)) return false;
-  for (int i = first; i <= last; ++i) {
-    if (wordDetect::shapeOf(cleanWordStart(words[i].text)).ideograph.empty()) return false;
+  if (last - first + 1 > static_cast<int>(vocabText::MAX_WORD_CHARS)) return false;
+  return !selectionIdeographs(first, last).empty();
+}
+
+bool ClipSelectionActivity::readyDictionaries() {
+  if (!dictionariesChecked) {
+    dictionariesChecked = true;
+    dictionariesReady =
+        SETTINGS.dictionaryName[0] != '\0' && dictionaries.open(SETTINGS.dictionaryName) && !dictionaries.needsIndex();
   }
-  return true;
+  return dictionariesReady;
+}
+
+void ClipSelectionActivity::syncPreview() {
+  if (rangeStart != previewRangeStart || selected != previewSelected) refreshPreview();
+}
+
+void ClipSelectionActivity::refreshPreview() {
+  preview.clear();
+  previewRangeStart = rangeStart;
+  previewSelected = selected;
+  if (mode == Mode::DefinitionLookup || !mappedInput.hasTouch() || rangeStart < 0) return;
+  const int first = std::min(rangeStart, selected);
+  const int last = std::max(rangeStart, selected);
+  // A word or short phrase, not a passage.
+  if (last - first + 1 > static_cast<int>(vocabText::MAX_WORD_CHARS)) return;
+  std::string word = selectionIdeographs(first, last);
+  if (word.empty()) {
+    if (last - first + 1 > 4) return;
+    std::string text;
+    if (!buildSelectedText(first, last, text)) return;
+    word = Dictionary::cleanWord(text.c_str());
+  }
+  if (word.empty() || !readyDictionaries()) return;
+  preview = VocabStore::glossFor(dictionaries, word);
+}
+
+std::string ClipSelectionActivity::sentenceAround(const int first, const int last) const {
+  // Walk out to the sentence ends, staying inside the paragraph; a long
+  // sentence is cut to a window around the word and marked with ellipses.
+  constexpr int REACH = 30;
+  int start = first;
+  while (start > 0 && first - start < REACH && !words[start].paragraphStart &&
+         !vocabText::endsSentence(cleanWordStart(words[start - 1].text))) {
+    --start;
+  }
+  int end = last;
+  while (end + 1 < static_cast<int>(wordCount) && end - last < REACH &&
+         !vocabText::endsSentence(cleanWordStart(words[end].text)) && !words[end + 1].paragraphStart) {
+    ++end;
+  }
+  const bool cutStart =
+      !words[start].paragraphStart && !(start > 0 && vocabText::endsSentence(cleanWordStart(words[start - 1].text)));
+  const bool cutEnd = !vocabText::endsSentence(cleanWordStart(words[end].text)) &&
+                      !(end + 1 < static_cast<int>(wordCount) && words[end + 1].paragraphStart);
+  std::string text;
+  if (!buildSelectedText(start, end, text)) return {};
+  std::string sentence = vocabText::sanitize(text, vocabText::MAX_SENTENCE_BYTES - 6);
+  if (cutStart) sentence.insert(0, "\xE2\x80\xA6");  // "…"
+  if (cutEnd) sentence += "\xE2\x80\xA6";
+  return sentence;
+}
+
+std::string ClipSelectionActivity::selectionIdeographs(const int first, const int last) const {
+  std::vector<wordDetect::Token> tokens;
+  tokens.reserve(static_cast<size_t>(last - first + 1));
+  for (int i = first; i <= last; ++i) tokens.push_back({cleanWordStart(words[i].text)});
+  return wordDetect::ideographText(tokens);
+}
+
+void ClipSelectionActivity::highlightSpan(const int index, const bool trimLeft, const bool trimRight, int& x,
+                                          int& width) const {
+  const WordBox& word = words[index];
+  x = word.x;
+  width = word.width;
+  if (word.isRtl || !word.text) return;
+  const char* clean = cleanWordStart(word.text);
+  const auto range = wordDetect::highlightRange(clean, trimLeft, trimRight);
+  const size_t cleanLength = strlen(clean);
+  if (range.begin == 0 && range.end == cleanLength) return;
+  // Measure the token text before and through the kept part, from the start the token is drawn at.
+  // EpubReaderActivity::drawVocabUnderlines trims the same way for the page underlines.
+  const size_t lead = static_cast<size_t>(clean - word.text);
+  char buffer[64];
+  const auto advance = [&](const size_t bytes) {
+    if (bytes == 0) return 0;
+    if (bytes >= sizeof(buffer)) return -1;
+    memcpy(buffer, word.text, bytes);
+    buffer[bytes] = '\0';
+    return renderer.getTextAdvanceX(word.fontId, buffer, word.style, word.characterSpacing);
+  };
+  const int left = range.begin == 0 ? 0 : advance(lead + range.begin);
+  const int right = range.end == cleanLength ? word.width : advance(lead + range.end);
+  const int fullWidth = word.width;
+  if (left < 0 || right < 0 || right <= left || fullWidth <= 1) return;
+  const int kept = std::clamp(left, 0, fullWidth - 1);
+  x = word.x + kept;
+  width = std::clamp(right, kept + 1, fullWidth) - kept;
 }
 
 Rect ClipSelectionActivity::actionRect() const {
+  const Rect toolbar = toolbarRect();
+  const int stripHeight = previewHeight();
+  return Rect{toolbar.x, toolbar.y + stripHeight, toolbar.width, toolbar.height - stripHeight};
+}
+
+Rect ClipSelectionActivity::previewRect() const {
+  const Rect toolbar = toolbarRect();
+  return Rect{toolbar.x, toolbar.y, toolbar.width, previewHeight()};
+}
+
+int ClipSelectionActivity::previewHeight() const {
+  if (preview.empty()) return 0;
+  return renderer.getLineHeight(fontId) + UITheme::getInstance().getMetrics().menuSpacing * 2;
+}
+
+Rect ClipSelectionActivity::toolbarRect() const {
   Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   const auto& metrics = UITheme::getInstance().getMetrics();
   int top, right, bottom, left;
@@ -776,17 +909,34 @@ Rect ClipSelectionActivity::actionRect() const {
   for (const auto action : actions) labelWidth = std::max(labelWidth, renderer.getTextWidth(font, actionLabel(action)));
   const int padding = metrics.menuSpacing;
   const int count = static_cast<int>(actions.size());
-  const int width = std::min(safe.width, count * (labelWidth + padding * 2) + padding * (count + 1));
-  const int lines = labelWidth > (width - padding * (count + 1)) / count ? 2 : 1;
+  const int buttonsWidth = std::min(safe.width, count * (labelWidth + padding * 2) + padding * (count + 1));
+  const int lines = labelWidth > (buttonsWidth - padding * (count + 1)) / count ? 2 : 1;
   const int height = std::max(36, renderer.getLineHeight(font) * lines + padding * 2);
+  // Widen for the preview line, up to the screen width; a longer one is cut with "…".
+  int width = buttonsWidth;
+  if (!preview.empty()) {
+    width = std::max(width, std::min(safe.width, renderer.getTextWidth(fontId, preview.c_str()) + padding * 4));
+  }
   int first = std::min(rangeStart, selected);
   const int last = std::max(rangeStart, selected);
   while (first < last && words[first].pageOffset < currentPageOffset) ++first;
-  return selectionGeometry::actions(safe, selectionTop(), height + padding * 2, metrics.verticalSpacing, width,
-                                    words[first].x - padding);
+  return selectionGeometry::actions(safe, selectionTop(), height + padding * 2 + previewHeight(),
+                                    metrics.verticalSpacing, width, words[first].x - padding);
 }
 
 void ClipSelectionActivity::drawActions() const {
+  if (!preview.empty()) {
+    const auto& metrics = UITheme::getInstance().getMetrics();
+    const Rect strip = previewRect();
+    const int padding = metrics.menuSpacing;
+    const Rect box{strip.x + padding, strip.y + padding / 2, strip.width - padding * 2, strip.height - padding};
+    renderer.fillRoundedRect(box.x, box.y, box.width, box.height, metrics.controlRadius, Color::White);
+    renderer.drawRoundedRect(box.x, box.y, box.width, box.height, 1, metrics.controlRadius, true);
+    // Drawn in the reading font: the line mixes pinyin, English and Chinese.
+    const std::string line = renderer.truncatedText(fontId, preview.c_str(), box.width - padding * 2);
+    renderer.getFontCacheManager()->prewarmCache(fontId, line.c_str(), 0x01);
+    renderer.drawText(fontId, box.x + padding, box.y + (box.height - renderer.getLineHeight(fontId)) / 2, line.c_str());
+  }
   const auto actions = selectionActions();
   std::array<const char*, std::size(CHINESE_READER_ACTIONS)> labels{};
   for (size_t i = 0; i < actions.size(); ++i) labels[i] = actionLabel(actions[i]);
@@ -969,7 +1119,11 @@ void ClipSelectionActivity::drawSelection() const {
     const WordBox& word = words[i];
     if (word.pageOffset != currentPageOffset) continue;
     if (previous) ditherGapBetween(*previous, word, offsetX, offset);
-    renderer.fillRectDither(word.x + offsetX, word.y + offset, word.width, word.height, Color::LightGray);
+    // Punctuation attached to the first or last character stays unshaded.
+    int boxX = word.x;
+    int boxWidth = word.width;
+    if (rangeStart >= 0 && (i == first || i == last)) highlightSpan(i, i == first, i == last, boxX, boxWidth);
+    renderer.fillRectDither(boxX + offsetX, word.y + offset, boxWidth, word.height, Color::LightGray);
     renderer.drawText(word.fontId, word.x + offsetX, word.y + offset, word.text, true, word.style,
                       BidiUtils::BidiBaseDir::AUTO, word.characterSpacing);
     previous = &word;

@@ -114,3 +114,38 @@ TEST(WordDetect, TieGoesToEarlierStart) {
 TEST(WordDetect, InvalidUtf8IsNotAnIdeograph) {
   EXPECT_TRUE(wordDetect::candidates(tokens({"\xE4\xB8"}), 0).empty());  // truncated 中
 }
+
+TEST(WordDetect, HighlightLeavesOutAttachedPunctuation) {
+  const std::string token = "国\xE3\x80\x82";  // 国。
+  auto range = wordDetect::highlightRange(token, false, true);
+  EXPECT_EQ(token.substr(range.begin, range.end - range.begin), "国");
+  range = wordDetect::highlightRange(token, false, false);  // not at a selection edge
+  EXPECT_EQ(range.end, token.size());
+  const std::string quoted = "\xE2\x80\x9C你";  // “你
+  range = wordDetect::highlightRange(quoted, true, false);
+  EXPECT_EQ(quoted.substr(range.begin, range.end - range.begin), "你");
+  range = wordDetect::highlightRange("hello,", true, true);  // not Chinese: whole token
+  EXPECT_EQ(range.begin, 0u);
+  EXPECT_EQ(range.end, 6u);
+}
+
+TEST(WordDetect, IdeographTextDropsPunctuation) {
+  const std::string open = "\xE2\x80\x9C";               // “
+  const std::string close = "\xE3\x80\x82\xE2\x80\x9D";  // 。”
+  const std::vector<std::string> texts = {open + "图", "书", "馆" + close};
+  std::vector<wordDetect::Token> run;
+  for (const auto& text : texts) run.push_back({text});
+  EXPECT_EQ(wordDetect::ideographText(run), "图书馆");
+  // A punctuation-only token at either end is skipped.
+  const std::vector<std::string> edged = {"\xEF\xBC\x8C", "中", "国", "\xE3\x80\x81"};  // ，中国、
+  run.clear();
+  for (const auto& text : edged) run.push_back({text});
+  EXPECT_EQ(wordDetect::ideographText(run), "中国");
+  // English or mixed selections are left to the normal text path.
+  run = {{"hello"}};
+  EXPECT_EQ(wordDetect::ideographText(run), "");
+  const std::vector<std::string> mixed = {"中", "，", "国"};
+  run.clear();
+  for (const auto& text : mixed) run.push_back({text});
+  EXPECT_EQ(wordDetect::ideographText(run), "");
+}

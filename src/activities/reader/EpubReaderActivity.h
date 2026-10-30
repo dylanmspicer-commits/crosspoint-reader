@@ -19,6 +19,7 @@
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
 #include "components/OptionPopup.h"
+#include "util/VocabText.h"
 
 class EpubReaderActivity final : public ReaderActivity {
   std::shared_ptr<Epub> epub;
@@ -210,11 +211,14 @@ class EpubReaderActivity final : public ReaderActivity {
     std::string author;
     std::string chapterTitle;
   };
+  // The current selection began with a long-press on the page (not from a menu or button).
+  bool lookupStartedByTouch = false;
   // Save a highlight, with note text appended when note is not empty.
   void saveClipping(const ClippingResult& clipping, const ClipContext& context, const std::string& note);
   void openNoteEntry(ClippingResult clipping, ClipContext context);
   // Add word to this book's vocabulary list with a short gloss from the dictionaries.
-  void saveVocabWord(const std::string& word);
+  void saveVocabWord(vocabText::Entry entry);
+  static vocabText::Entry vocabEntryFor(const ClippingResult& clipping, const ClipContext& context);
   int clippingAtPoint(const Page& page, int x, int y) const;
   void openClippings();
   void applyProgressChange(const ProgressChangeResult& progress);
@@ -231,6 +235,8 @@ class EpubReaderActivity final : public ReaderActivity {
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void drawClippingHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
+  // Dotted line under the words of this book's vocabulary list.
+  void drawVocabUnderlines(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
   void renderStatusBar() const;
   void applyOrientation(uint8_t orientation);
   void applyInitialOrientation() override;

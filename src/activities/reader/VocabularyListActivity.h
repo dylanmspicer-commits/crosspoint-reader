@@ -9,7 +9,7 @@
 #include "util/VocabText.h"
 
 // The open book's saved Chinese words, oldest first, each with its one-line
-// gloss. Tap a word for its full entry; hold it to delete it.
+// gloss. Tap a word for its sentence, definition and passage; hold it to delete it.
 class VocabularyListActivity final : public UiListActivity {
  public:
   VocabularyListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
@@ -19,11 +19,16 @@ class VocabularyListActivity final : public UiListActivity {
 
  private:
   void refreshRowWindow(int start);
-  void openSelected();
+  void reloadOffsets();
+  // Reads the entry at nav.selected into selectedEntry.
+  bool loadSelected();
+  void openSelected();  // the box with the sentence, Definition and Go to Passage
+  void showDefinition();
+  void goToPassage();
   void showDeleteConfirmation();
   void deleteSelected();
 
-  int listCount() const override { return static_cast<int>(entries.size()); }
+  int listCount() const override { return static_cast<int>(offsets.size()); }
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
   void onRowLongPress(int index) override;
@@ -31,11 +36,13 @@ class VocabularyListActivity final : public UiListActivity {
   bool handleButtons() override;
   const char* headerTitle() const override;
 
-  // Rows handed to the list are a window around the viewport, so a long list
-  // costs one ListItem per visible row rather than one per word.
+  // Only each entry's position in the file is held; the rows on screen are read
+  // from the SD card, so a long list costs a few bytes per word.
   static constexpr int ROW_WINDOW = 10;
-  std::vector<vocabText::Entry> entries;
+  std::vector<uint32_t> offsets;
+  std::array<vocabText::Entry, ROW_WINDOW> windowEntries;
   std::array<freeink::ui::ListItem, ROW_WINDOW> rowItems;
+  vocabText::Entry selectedEntry;
   int windowStart = -1;
   int windowCount = 0;
   // Kept open while a definition is shown: its nested lookups use it.

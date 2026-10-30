@@ -13,6 +13,7 @@
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 #include "components/themes/BaseTheme.h"
+#include "util/DictionarySet.h"
 #include "util/WordSelectionInput.h"
 
 class ClipSelectionActivity final : public Activity {
@@ -72,6 +73,12 @@ class ClipSelectionActivity final : public Activity {
   std::span<const ClippingResult::Action> selectionActions() const;
   // True when the selection is a short run of Chinese characters, worth a Save Word button.
   bool selectionIsWord() const;
+  // The Chinese characters of words[first..last] without punctuation, or empty.
+  std::string selectionIdeographs(int first, int last) const;
+  // The sentence around words[first..last], cut to a short window when long.
+  std::string sentenceAround(int first, int last) const;
+  // Screen span of words[index] to shade, leaving out punctuation on the trimmed sides.
+  void highlightSpan(int index, bool trimLeft, bool trimRight, int& x, int& width) const;
   // Grow a long-pressed CJK character to the longest dictionary word around it.
   void selectDictionaryWord(int hit);
   int closestInRow(uint16_t row, int centerX) const;
@@ -87,7 +94,16 @@ class ClipSelectionActivity final : public Activity {
   void loopButtons();
   bool handleButtons(uint8_t buttons);
   Rect handleRect(int index, bool start) const;
-  Rect actionRect() const;
+  Rect actionRect() const;   // the buttons
+  Rect toolbarRect() const;  // preview line and buttons together
+  Rect previewRect() const;
+  int previewHeight() const;
+  // One-line gloss of the selection from the dictionaries, shown above the buttons.
+  void refreshPreview();
+  // Refreshes the preview when the selection changed since it was made.
+  void syncPreview();
+  // Opens the dictionaries once; false when none is set or one still needs indexing.
+  bool readyDictionaries();
   int selectionTop() const;
   int textOffset() const;
   int textXOffset() const;
@@ -137,4 +153,11 @@ class ClipSelectionActivity final : public Activity {
   int lastRenderedPageOffset = -1;
   int lastRenderedTextOffset = 0;
   int lastRenderedTextXOffset = 0;
+  // Opened at most once per selection, shared by word detection and the preview.
+  DictionarySet dictionaries;
+  bool dictionariesChecked = false;
+  bool dictionariesReady = false;
+  std::string preview;
+  int previewRangeStart = -1;  // selection the preview was made for
+  int previewSelected = -1;
 };

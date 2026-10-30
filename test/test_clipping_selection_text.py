@@ -219,6 +219,10 @@ struct ClipSelectionActivity {
   int textOffset() const { return 0; }
   int textXOffset() const { return 0; }
   Rect handleRect(int, bool) const { return {}; }
+  void highlightSpan(int index, bool, bool, int& x, int& width) const {
+    x = words[index].x;
+    width = words[index].width;
+  }
   Rect actionRect() const { return {}; }
 };
 """ + build_text + extract_words + clean_draw + highlight_draw + selection_draw + r"""
